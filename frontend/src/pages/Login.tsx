@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { api, type User } from "../api";
+import { api, setAuthToken, type User } from "../api";
 import { useAuth } from "../App";
 import { Icon, useResolvedDark } from "../components/icons";
 import { cx } from "../components/ui";
@@ -35,7 +35,9 @@ export default function Login() {
     setBusy(true);
     setErr("");
     try {
-      const r = await api<{ user: User }>("/api/auth/login", { method: "POST", json: { username: username.trim(), password, remember } });
+      const r = await api<{ user: User; token: string }>("/api/auth/login", { method: "POST", json: { username: username.trim(), password, remember } });
+      // stored token = the installed Android app stays signed in (browsers keep using the cookie too)
+      setAuthToken(r.token, remember);
       setUser(r.user);
       nav("/scan", { replace: true });
     } catch (e) {

@@ -24,6 +24,9 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/tsconfig.tsbuildinfo
+# Capacitor native shells are generated in CI (mobile-apk.yml), not committed
+frontend/android/
+frontend/ios/
 
 # Logs & temp
 *.log

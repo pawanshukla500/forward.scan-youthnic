@@ -163,12 +163,46 @@ export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
 }
 
+/* ---- installed-app auth: the same JWT the server sets as a cookie, sent as a Bearer token ----
+   Browsers keep using the session cookie (token stays null). The Android app (Capacitor +
+   bundled dist, origin http://localhost) cannot rely on cookies, so it stores the login token
+   and sends it on every call; the server accepts it the same way (see security.current_user). */
+const TOKEN_KEY = "fs_token";
+let authToken: string | null = null;
+try {
+  authToken = localStorage.getItem(TOKEN_KEY);
+} catch {
+  /* storage may be blocked */
+}
+export function getAuthToken(): string | null {
+  return authToken;
+}
+export function setAuthToken(token: string | null, persist = true) {
+  authToken = token;
+  try {
+    if (token && persist) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* storage may be blocked */
+  }
+}
+
+/** Absolute API base for the installed app (VITE_API_URL=https://scan.youthnic.shop); empty = same origin. */
+export const API_BASE = ((import.meta.env.VITE_API_URL as string | undefined) || "").replace(/\/+$/, "");
+export function apiUrl(path: string): string {
+  return `${API_BASE}${path}`;
+}
+
 export async function api<T = unknown>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
   const { json, headers, ...rest } = init;
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     credentials: "same-origin",
     ...rest,
-    headers: { ...(json !== undefined ? { "Content-Type": "application/json" } : {}), ...(headers || {}) },
+    headers: {
+      ...(json !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      ...(headers || {}),
+    },
     body: json !== undefined ? JSON.stringify(json) : rest.body,
   });
   if (res.status === 401 && !path.startsWith("/api/auth/login")) onUnauthorized?.();
@@ -197,7 +231,10 @@ export function qs(params: Record<string, string | number | boolean | null | und
 
 /** Trigger a browser download for an export endpoint (keeps the session cookie). */
 export async function download(path: string) {
-  const res = await fetch(path, { credentials: "same-origin" });
+  const res = await fetch(apiUrl(path), {
+    credentials: "same-origin",
+    headers: { ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+  });
   if (!res.ok) {
     let msg = res.statusText;
     try {

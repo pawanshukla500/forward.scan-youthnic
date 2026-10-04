@@ -112,6 +112,8 @@ jobs:
           BACKUP_RECENT_MINUTES: ${{ vars.BACKUP_RECENT_MINUTES || '15' }}
           BACKUP_KEEP_DAILY: ${{ vars.BACKUP_KEEP_DAILY || '14' }}
           BACKUP_KEEP_MONTHLY: ${{ vars.BACKUP_KEEP_MONTHLY || '12' }}
+          # origins allowed to call the API with a Bearer token (installed Android app: http://localhost)
+          CORS_ORIGINS: ${{ vars.CORS_ORIGINS || '' }}
           APP_DOMAIN: ${{ vars.APP_DOMAIN || 'scan.youthnic.shop' }}
           FALLBACK_DOMAIN: ${{ vars.FALLBACK_DOMAIN || 'scan.srv1845788.hstgr.cloud' }}
         run: |
@@ -146,6 +148,7 @@ jobs:
           BACKUP_RECENT_MINUTES=${BACKUP_RECENT_MINUTES}
           BACKUP_KEEP_DAILY=${BACKUP_KEEP_DAILY}
           BACKUP_KEEP_MONTHLY=${BACKUP_KEEP_MONTHLY}
+          CORS_ORIGINS=${CORS_ORIGINS}
           EOF
 
           tar --warning=no-file-changed \

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import { api, setUnauthorizedHandler, type User } from "./api";
+import { api, setAuthToken, setUnauthorizedHandler, type User } from "./api";
 import { ChangePasswordPage } from "./components/ChangePassword";
 import { Shell } from "./components/Shell";
 import { Spinner } from "./components/ui";
@@ -29,7 +29,11 @@ function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    setUnauthorizedHandler(() => setUser(null));
+    // a dead stored token must not loop forever: drop it the moment the server rejects it
+    setUnauthorizedHandler(() => {
+      setAuthToken(null);
+      setUser(null);
+    });
     api<{ user: User }>("/api/auth/me")
       .then((r) => setUser(r.user))
       .catch(() => setUser(null))
@@ -44,6 +48,7 @@ function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     await api("/api/auth/logout", { method: "POST" }).catch(() => {});
+    setAuthToken(null);
     setUser(null);
   }, []);
 

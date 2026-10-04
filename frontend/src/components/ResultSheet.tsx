@@ -18,7 +18,6 @@ export interface SheetLast {
 export function ResultSheet({
   last,
   channelName,
-  held,
   canUndo,
   onPrimary,
   onDismiss,
@@ -26,7 +25,6 @@ export function ResultSheet({
 }: {
   last: SheetLast;
   channelName: string;
-  held: boolean;
   canUndo: boolean;
   onPrimary: () => void;
   onDismiss: () => void;
@@ -98,19 +96,14 @@ export function ResultSheet({
               </div>
             )}
           </dl>
-          {held && (
-            <p className="mt-3 rounded-lg bg-crit-wash px-3 py-2 text-sm font-medium text-crit-ink" role="alert">
-              Scanner paused - put this packet aside first.
-            </p>
-          )}
           <div className="mt-4 grid gap-2 pb-[env(safe-area-inset-bottom)]">
             <button
               ref={primary}
               type="button"
               onClick={onPrimary}
-              className="ease-ui flex h-13 min-h-13 cursor-pointer items-center justify-center gap-2 rounded-xl bg-accent px-5 py-3.5 text-base font-bold text-on-accent active:opacity-80"
+              className="ease-ui flex min-h-13 cursor-pointer items-center justify-center gap-2 rounded-xl bg-accent px-5 py-3.5 text-base font-bold text-on-accent active:opacity-80"
             >
-              {held ? "Put aside & continue" : "Next shipment"} <ArrowRight className="size-5" aria-hidden />
+              Next shipment <ArrowRight className="size-5" aria-hidden />
             </button>
             {canUndo && (
               <button
