@@ -1,0 +1,216 @@
+name: Production Build & Deploy to Hostinger VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Run Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Execute Pytest Suite
+        run: |
+          pytest -q -p no:warnings backend/tests
+
+  deploy:
+    name: Deploy to Hostinger VPS
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH Key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H -p ${{ secrets.HOSTINGER_SSH_PORT || 22 }} ${{ secrets.HOSTINGER_HOST || '200.141.1.119' }} >> ~/.ssh/known_hosts
+
+      - name: Package Application and Generate Production .env
+        env:
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST || '200.141.1.119' }}
+          HOSTINGER_USER: ${{ secrets.HOSTINGER_USER || 'root' }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          OMSGURU_API_TOKEN: ${{ secrets.OMSGURU_API_TOKEN }}
+          OMSGURU_CLIENT_ID: ${{ secrets.OMSGURU_CLIENT_ID || vars.OMSGURU_CLIENT_ID || '33299' }}
+          OMSGURU_USE_MOCK: ${{ vars.OMSGURU_USE_MOCK || 'false' }}
+          SYNC_INTERVAL_SECONDS: ${{ vars.SYNC_INTERVAL_SECONDS || '60' }}
+          BATCH_LIMIT: ${{ vars.BATCH_LIMIT || '100' }}
+          DATABASE_URL: ${{ vars.DATABASE_URL || 'sqlite:///data/omsguru_forward_scan.db' }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+          ADMIN_NAME: ${{ vars.ADMIN_NAME || 'Pawan Shukla' }}
+          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL || 'returnorders@vbexports.co.in' }}
+          ADMIN_USERNAME: ${{ vars.ADMIN_USERNAME || 'pawan.shukla' }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          OMSGURU_RESERVE_CREDITS: ${{ vars.OMSGURU_RESERVE_CREDITS || '5' }}
+          ORDER_LOOKBACK_DAYS: ${{ vars.ORDER_LOOKBACK_DAYS || '15' }}
+          OPEN_ORDERS_REFRESH_MINUTES: ${{ vars.OPEN_ORDERS_REFRESH_MINUTES || '30' }}
+          CANCEL_SWEEP_MINUTES: ${{ vars.CANCEL_SWEEP_MINUTES || '20' }}
+          TZ_OFFSET_MINUTES: ${{ vars.TZ_OFFSET_MINUTES || '330' }}
+          DAY_START_HOUR: ${{ vars.DAY_START_HOUR || '0' }}
+          SESSION_HOURS: ${{ vars.SESSION_HOURS || '14' }}
+          LIVE_LOOKUP: ${{ vars.LIVE_LOOKUP || 'true' }}
+          LIVE_TIMEOUT_SECONDS: ${{ vars.LIVE_TIMEOUT_SECONDS || '2.5' }}
+          LIVE_HEADROOM: ${{ vars.LIVE_HEADROOM || '4' }}
+          CANCEL_CHECK_DAYS: ${{ vars.CANCEL_CHECK_DAYS || '3' }}
+          RETAIN_ORDERS_DAYS: ${{ vars.RETAIN_ORDERS_DAYS || '7' }}
+          SCAN_RETENTION_DAYS: ${{ vars.SCAN_RETENTION_DAYS || '1095' }}
+          HISTORY_BACKFILL: ${{ vars.HISTORY_BACKFILL || 'true' }}
+          BACKUP_ENABLED: ${{ vars.BACKUP_ENABLED || 'true' }}
+          BACKUP_FULL_HOUR: ${{ vars.BACKUP_FULL_HOUR || '2' }}
+          BACKUP_RECENT_MINUTES: ${{ vars.BACKUP_RECENT_MINUTES || '15' }}
+          BACKUP_KEEP_DAILY: ${{ vars.BACKUP_KEEP_DAILY || '14' }}
+          BACKUP_KEEP_MONTHLY: ${{ vars.BACKUP_KEEP_MONTHLY || '12' }}
+          APP_DOMAIN: ${{ vars.APP_DOMAIN || 'scan.youthnic.shop' }}
+          FALLBACK_DOMAIN: ${{ vars.FALLBACK_DOMAIN || 'scan.srv1845788.hstgr.cloud' }}
+        run: |
+          cat <<EOF > /tmp/forward-scan.env
+          OMSGURU_API_TOKEN=${OMSGURU_API_TOKEN}
+          OMSGURU_CLIENT_ID=${OMSGURU_CLIENT_ID}
+          OMSGURU_USE_MOCK=${OMSGURU_USE_MOCK}
+          SYNC_INTERVAL_SECONDS=${SYNC_INTERVAL_SECONDS}
+          BATCH_LIMIT=${BATCH_LIMIT}
+          DATABASE_URL=${DATABASE_URL}
+          APP_SECRET_KEY=${APP_SECRET_KEY}
+          ADMIN_NAME=${ADMIN_NAME}
+          ADMIN_EMAIL=${ADMIN_EMAIL}
+          ADMIN_USERNAME=${ADMIN_USERNAME}
+          ADMIN_PASSWORD=${ADMIN_PASSWORD}
+          OMSGURU_RESERVE_CREDITS=${OMSGURU_RESERVE_CREDITS}
+          ORDER_LOOKBACK_DAYS=${ORDER_LOOKBACK_DAYS}
+          OPEN_ORDERS_REFRESH_MINUTES=${OPEN_ORDERS_REFRESH_MINUTES}
+          CANCEL_SWEEP_MINUTES=${CANCEL_SWEEP_MINUTES}
+          TZ_OFFSET_MINUTES=${TZ_OFFSET_MINUTES}
+          DAY_START_HOUR=${DAY_START_HOUR}
+          SESSION_HOURS=${SESSION_HOURS}
+          LIVE_LOOKUP=${LIVE_LOOKUP}
+          LIVE_TIMEOUT_SECONDS=${LIVE_TIMEOUT_SECONDS}
+          LIVE_HEADROOM=${LIVE_HEADROOM}
+          CANCEL_CHECK_DAYS=${CANCEL_CHECK_DAYS}
+          RETAIN_ORDERS_DAYS=${RETAIN_ORDERS_DAYS}
+          SCAN_RETENTION_DAYS=${SCAN_RETENTION_DAYS}
+          HISTORY_BACKFILL=${HISTORY_BACKFILL}
+          BACKUP_ENABLED=${BACKUP_ENABLED}
+          BACKUP_FULL_HOUR=${BACKUP_FULL_HOUR}
+          BACKUP_RECENT_MINUTES=${BACKUP_RECENT_MINUTES}
+          BACKUP_KEEP_DAILY=${BACKUP_KEEP_DAILY}
+          BACKUP_KEEP_MONTHLY=${BACKUP_KEEP_MONTHLY}
+          EOF
+
+          tar --warning=no-file-changed \
+              --exclude='./.git' \
+              --exclude='./.venv' \
+              --exclude='./venv' \
+              --exclude='./__pycache__' \
+              --exclude='./*.pyc' \
+              --exclude='./.pytest_cache' \
+              --exclude='./*.db*' \
+              --exclude='./backups' \
+              --exclude='./data' \
+              --exclude='./frontend/node_modules' \
+              --exclude='./frontend/dist' \
+              --exclude='./frontend/.vite' \
+              --exclude='./frontend/tsconfig.tsbuildinfo' \
+              --exclude='./.env*' \
+              -czf /tmp/forward-scan-source.tar.gz .
+
+          ssh -p "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 "${HOSTINGER_USER}@${HOSTINGER_HOST}" "mkdir -p /opt/forward-scan"
+          scp -P "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 /tmp/forward-scan.env "${HOSTINGER_USER}@${HOSTINGER_HOST}:/opt/forward-scan/forward-scan.env"
+          scp -P "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 /tmp/forward-scan-source.tar.gz "${HOSTINGER_USER}@${HOSTINGER_HOST}:/opt/forward-scan/forward-scan-source.tar.gz"
+
+      - name: Execute Remote Hostinger VPS Deployment
+        env:
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST || '200.141.1.119' }}
+          HOSTINGER_USER: ${{ secrets.HOSTINGER_USER || 'root' }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          APP_DOMAIN: ${{ vars.APP_DOMAIN || 'scan.youthnic.shop' }}
+          FALLBACK_DOMAIN: ${{ vars.FALLBACK_DOMAIN || 'scan.srv1845788.hstgr.cloud' }}
+        run: |
+          ssh -p "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 "${HOSTINGER_USER}@${HOSTINGER_HOST}" 'bash -s' <<'EOF'
+          set -euo pipefail
+
+          echo ">>> [1/7] Preparing directory structure in /opt/forward-scan/Forward-Scan..."
+          mkdir -p /opt/forward-scan/Forward-Scan/data
+          # Extract source code, preserving data directory
+          find /opt/forward-scan/Forward-Scan -mindepth 1 -maxdepth 1 ! -name 'data' -exec rm -rf {} +
+          cd /opt/forward-scan
+          tar -xzf forward-scan-source.tar.gz -C Forward-Scan
+          cd Forward-Scan
+
+          echo ">>> [2/7] Configuring environment and compose files..."
+          mv /opt/forward-scan/forward-scan.env .env
+          chmod 600 .env
+          ln -sf docker-compose.production.yml docker-compose.yml
+          mkdir -p data data/backups
+
+          echo ">>> [3/7] Building and starting Forward Scan container..."
+          docker compose -p forward-scan -f docker-compose.production.yml --env-file .env up -d --build --remove-orphans
+
+          echo ">>> [4/7] Linking to /docker/forward-scan for Hostinger hPanel Docker Manager..."
+          mkdir -p /docker
+          ln -sfn /opt/forward-scan/Forward-Scan /docker/forward-scan
+
+          echo ">>> [5/7] Verifying Forward-Scan container status..."
+          sleep 5
+          docker ps --filter "name=Forward-Scan"
+
+          echo ">>> [6/7] Checking internal health endpoint..."
+          healthy=0
+          for i in {1..25}; do
+            if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
+              echo "Internal health check passed at http://127.0.0.1:8000/api/health"
+              healthy=1
+              break
+            fi
+            echo "Waiting for Forward-Scan container to become healthy ($i/25)..."
+            sleep 3
+          done
+
+          if [ "$healthy" -ne 1 ]; then
+            echo "Container failed health check. Recent logs:"
+            docker logs Forward-Scan --tail=100
+            exit 1
+          fi
+
+          echo ">>> [7/7] Testing Traefik routing..."
+          echo "Testing fallback domain: https://scan.srv1845788.hstgr.cloud/api/health"
+          curl -k -fsS "https://scan.srv1845788.hstgr.cloud/api/health" || echo "Fallback domain initial SSL negotiation in progress..."
+
+          echo "Testing custom domain: https://scan.youthnic.shop/api/health"
+          curl -k -fsS "https://scan.youthnic.shop/api/health" || echo "DNS for scan.youthnic.shop will activate once A record points to this VPS."
+
+          echo "Cleaning up dangling images..."
+          docker image prune -f
+
+          echo "=========================================================================="
+          echo "Forward Scan service is LIVE on Hostinger VPS!"
+          echo "Container: Forward-Scan"
+          echo "Hostinger hPanel: /docker/forward-scan"
+          echo "Public HTTPS URL: https://scan.youthnic.shop"
+          echo "Fallback HTTPS URL: https://scan.srv1845788.hstgr.cloud"
+          echo "=========================================================================="
+          EOF

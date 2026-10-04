@@ -1,0 +1,87 @@
+name: forward-scan
+
+services:
+  forward-scan:
+    container_name: Forward-Scan
+    image: forward-scan:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "8000"
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - ./.env
+    environment:
+      TZ: Asia/Kolkata
+      DATABASE_URL: sqlite:///data/omsguru_forward_scan.db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - shared_infra
+    volumes:
+      - ./data:/app/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=shared_infra"
+
+      # Custom Domain Router: scan.youthnic.shop
+      - "traefik.http.routers.forward-scan.rule=Host(`scan.youthnic.shop`)"
+      - "traefik.http.routers.forward-scan.entrypoints=websecure"
+      - "traefik.http.routers.forward-scan.tls=true"
+      - "traefik.http.routers.forward-scan.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.forward-scan.middlewares=forward-scan-headers"
+      - "traefik.http.routers.forward-scan.service=forward-scan"
+
+      # Fallback Domain Router: scan.srv1845788.hstgr.cloud
+      - "traefik.http.routers.forward-scan-fallback.rule=Host(`scan.srv1845788.hstgr.cloud`)"
+      - "traefik.http.routers.forward-scan-fallback.entrypoints=websecure"
+      - "traefik.http.routers.forward-scan-fallback.tls=true"
+      - "traefik.http.routers.forward-scan-fallback.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.forward-scan-fallback.middlewares=forward-scan-headers"
+      - "traefik.http.routers.forward-scan-fallback.service=forward-scan"
+
+      # HTTP -> HTTPS Automatic 301 Redirect for scan.youthnic.shop
+      - "traefik.http.routers.forward-scan-http.rule=Host(`scan.youthnic.shop`)"
+      - "traefik.http.routers.forward-scan-http.entrypoints=web"
+      - "traefik.http.routers.forward-scan-http.middlewares=forward-scan-redirect-https"
+
+      # HTTP -> HTTPS Automatic 301 Redirect for fallback domain
+      - "traefik.http.routers.forward-scan-fallback-http.rule=Host(`scan.srv1845788.hstgr.cloud`)"
+      - "traefik.http.routers.forward-scan-fallback-http.entrypoints=web"
+      - "traefik.http.routers.forward-scan-fallback-http.middlewares=forward-scan-redirect-https"
+
+      - "traefik.http.middlewares.forward-scan-redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.forward-scan-redirect-https.redirectscheme.permanent=true"
+
+      # Security & HSTS Headers
+      - "traefik.http.middlewares.forward-scan-headers.headers.sslredirect=true"
+      - "traefik.http.middlewares.forward-scan-headers.headers.stsseconds=31536000"
+      - "traefik.http.middlewares.forward-scan-headers.headers.stsincludesubdomains=true"
+      - "traefik.http.middlewares.forward-scan-headers.headers.stspreload=true"
+
+      # Traefik load balancer backend port
+      - "traefik.http.services.forward-scan.loadbalancer.server.port=8000"
+      - "com.docker.compose.project=forward-scan"
+      - "com.docker.compose.service=Forward Scan"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+networks:
+  shared_infra:
+    external: true

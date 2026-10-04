@@ -1,0 +1,24 @@
+name: forward-scan
+
+services:
+  forward-scan:
+    container_name: forward-scan
+    image: forward-scan:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Kolkata
+      DATABASE_URL: sqlite:///data/omsguru_forward_scan.db
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

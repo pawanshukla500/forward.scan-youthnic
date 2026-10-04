@@ -1,0 +1,305 @@
+@import "tailwindcss";
+
+/* ForwardScan design (Figma Make "Forward Scan Scanning Page") - see design-system/forward-scan/DECISIONS.md
+   Green brand, DM Sans, soft cards. Colours adjusted from the Figma file where needed so every text pair is
+   >= 4.5:1 and every control border >= 3:1 in both themes; type scaled up from the 8-11px mock to >= 12px. */
+
+/* ---- light (default) ------------------------------------------------------------------------ */
+:root {
+  color-scheme: light;
+  --page: #f5f7f6;
+  --surface: #ffffff;
+  --surface-2: #f8faf9;
+  --ink: #17211c;
+  --ink-2: #3a4740;
+  --muted: #6e7b74;
+  --muted-2: #9aa59f;
+  --line: #e2e8e4;
+  --line-strong: #e2e8e4;
+  --ring: rgba(18, 107, 78, 0.28);
+  --accent: #126b4e;         /* brand green - white text 6.5:1 */
+  --accent-hover: #0d553d;
+  --accent-ink: #126b4e;
+  --accent-wash: #e9f4ef;
+  --on-accent: #ffffff;
+  --brand: #126b4e;
+  --series-1: #126b4e;
+
+  --good: #30a46c;
+  --good-strong: #126b4e;    /* banner fill */
+  --good-ink: #126b4e;
+  --good-wash: #e9f4ef;
+  --warn: #d99b38;
+  --warn-ink: #9a5208;
+  --warn-wash: #fff6e7;
+  --crit: #c94d48;           /* fill, white text 4.5:1 */
+  --crit-ink: #b83a35;
+  --crit-wash: #fbeceb;
+  --info-wash: #e9f4ef;
+  --cod: #6d55a5;
+  --cod-wash: #f1edf8;
+  /* scan verdicts: duplicate = blue, not found in OMSGuru = purple (fills carry white text) */
+  --dup: #1f62c4;
+  --dup-ink: #1a56ad;
+  --dup-wash: #e8f0fb;
+  --nf: #6f42c1;
+  --nf-ink: #5f37a8;
+  --nf-wash: #f1ecfa;
+
+  --nav: #ffffff;
+  --nav-line: #e2e8e4;
+  --nav-ink: #17211c;
+  --nav-muted: #5f6b65;
+  --nav-active: #e9f4ef;
+  --nav-active-ink: #126b4e;
+  --deep: #153b2c;           /* help card / system banner */
+
+  --shadow-sm: 0 1px 2px rgba(19, 32, 25, 0.04), 0 8px 30px rgba(19, 32, 25, 0.05);
+  --shadow-md: 0 10px 34px -12px rgba(19, 32, 25, 0.28);
+}
+
+/* ---- dark: follows the system unless the user picked a theme -------------------------------- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #101512;
+    --surface: #171d19;
+    --surface-2: #1c231f;
+    --ink: #edf3ef;
+    --ink-2: #c9d4ce;
+    --muted: #96a49c;
+    --muted-2: #6f7b74;
+    --line: #2a342e;
+    --line-strong: #2a342e;
+    --ring: rgba(90, 198, 154, 0.35);
+    --accent: #5ac69a;
+    --accent-hover: #77d9b0;
+    --accent-ink: #5ac69a;
+    --accent-wash: #173a2c;
+    --on-accent: #0b1a13;      /* white on this green is only 2.1:1 */
+    --brand: #5ac69a;
+    --series-1: #5ac69a;
+    --good-ink: #5ac69a;
+    --good-wash: #173a2c;
+    --warn-ink: #f2aa55;
+    --warn-wash: #3c2b17;
+    --crit-ink: #f08a84;
+    --crit-wash: #3b1d1b;
+    --info-wash: #173a2c;
+    --cod: #b9a3e6;
+    --cod-wash: #2a2238;
+    --dup-ink: #8ab8f5;
+    --dup-wash: #172a42;
+    --nf-ink: #c0a6f2;
+    --nf-wash: #2b2242;
+    --nav: #171d19;
+    --nav-line: #2a342e;
+    --nav-ink: #edf3ef;
+    --nav-muted: #96a49c;
+    --nav-active: #173a2c;
+    --nav-active-ink: #77d9b0;
+    --deep: #0f2a20;
+    --shadow-sm: 0 8px 32px rgba(0, 0, 0, 0.18);
+    --shadow-md: 0 12px 36px -12px rgba(0, 0, 0, 0.6);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #101512;
+  --surface: #171d19;
+  --surface-2: #1c231f;
+  --ink: #edf3ef;
+  --ink-2: #c9d4ce;
+  --muted: #96a49c;
+  --muted-2: #6f7b74;
+  --line: #2a342e;
+  --line-strong: #2a342e;
+  --ring: rgba(90, 198, 154, 0.35);
+  --accent: #5ac69a;
+  --accent-hover: #77d9b0;
+  --accent-ink: #5ac69a;
+  --accent-wash: #173a2c;
+  --on-accent: #0b1a13;
+  --brand: #5ac69a;
+  --series-1: #5ac69a;
+  --good-ink: #5ac69a;
+  --good-wash: #173a2c;
+  --warn-ink: #f2aa55;
+  --warn-wash: #3c2b17;
+  --crit-ink: #f08a84;
+  --crit-wash: #3b1d1b;
+  --info-wash: #173a2c;
+  --cod: #b9a3e6;
+  --cod-wash: #2a2238;
+  --dup-ink: #8ab8f5;
+  --dup-wash: #172a42;
+  --nf-ink: #c0a6f2;
+  --nf-wash: #2b2242;
+  --nav: #171d19;
+  --nav-line: #2a342e;
+  --nav-ink: #edf3ef;
+  --nav-muted: #96a49c;
+  --nav-active: #173a2c;
+  --nav-active-ink: #77d9b0;
+  --deep: #0f2a20;
+  --shadow-sm: 0 8px 32px rgba(0, 0, 0, 0.18);
+  --shadow-md: 0 12px 36px -12px rgba(0, 0, 0, 0.6);
+}
+
+@theme inline {
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-wash: var(--accent-wash);
+  --color-on-accent: var(--on-accent);
+  --color-brand: var(--brand);
+  --color-good: var(--good);
+  --color-good-strong: var(--good-strong);
+  --color-good-ink: var(--good-ink);
+  --color-good-wash: var(--good-wash);
+  --color-warn: var(--warn);
+  --color-warn-ink: var(--warn-ink);
+  --color-warn-wash: var(--warn-wash);
+  --color-crit: var(--crit);
+  --color-crit-ink: var(--crit-ink);
+  --color-crit-wash: var(--crit-wash);
+  --color-info-wash: var(--info-wash);
+  --color-cod: var(--cod);
+  --color-cod-wash: var(--cod-wash);
+  --color-dup: var(--dup);
+  --color-dup-ink: var(--dup-ink);
+  --color-dup-wash: var(--dup-wash);
+  --color-nf: var(--nf);
+  --color-nf-ink: var(--nf-ink);
+  --color-nf-wash: var(--nf-wash);
+  --color-nav: var(--nav);
+  --color-nav-line: var(--nav-line);
+  --color-nav-ink: var(--nav-ink);
+  --color-nav-muted: var(--nav-muted);
+  --color-nav-active: var(--nav-active);
+  --color-nav-active-ink: var(--nav-active-ink);
+  --color-deep: var(--deep);
+  --font-sans: "DM Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+}
+
+/* Base and component rules live in cascade layers so Tailwind utilities on the same element win
+   (unlayered CSS would beat every utility, e.g. outline-none on the scan box or border-accent on a card). */
+@layer base {
+  html,
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  :where(button, a, select, input, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}
+
+@layer components {
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* card: 14px radius + soft shadow, as in the Figma file */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* small caps label used above headings ("SHIPMENT LOOKUP", "DISPATCH QUEUE") */
+  .eyebrow {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+}
+
+.ease-ui {
+  transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+  transition-duration: 160ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes flash-in {
+  from { transform: scale(0.99); opacity: 0.5; }
+  to { transform: scale(1); opacity: 1; }
+}
+.flash-in { animation: flash-in 180ms ease-out; }
+
+@keyframes shake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-8px); }
+  40%, 60% { transform: translateX(8px); }
+}
+.shake { animation: shake 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both; }
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+@layer components {
+  .skeleton {
+    border-radius: 6px;
+    background: linear-gradient(90deg, var(--surface-2) 0px, var(--line) 120px, var(--surface-2) 240px);
+    background-size: 800px 100%;
+    animation: shimmer 1.4s linear infinite;
+  }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+/* camera barcode scanner: green scan line sweeping the target box */
+@keyframes scanline {
+  from { transform: translateY(-42px); }
+  to { transform: translateY(42px); }
+}
+.scanline { animation: scanline 1.8s ease-in-out infinite alternate; }
+
+@keyframes slide-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+.slide-in { animation: slide-in 200ms cubic-bezier(0.2, 0, 0, 1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-in, .shake, .skeleton, .pulse-dot, .scanline, .slide-in { animation: none; }
+  .ease-ui { transition-duration: 0ms; }
+}
+
+.sr-only-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

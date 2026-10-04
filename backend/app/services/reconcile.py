@@ -1,0 +1,204 @@
+"""Dispatch reconciliation: every AWB generated vs what was actually scanned, per sales channel.
+
+An AWB generated today must be dispatched (scanned) today. For each AWB we know (last RETAIN_ORDERS_DAYS):
+
+  scanned         - forward-scanned by the team (any day)
+  pending         - not scanned, still Packed / Ready-to-ship in OMS          -> must go out
+  overdue         - pending, and the AWB was generated before today           -> late
+  left_unscanned  - not scanned, but OMS no longer shows it Ready-to-ship
+                    (shipped / in transit / moved) - dispatched without a scan?
+  cancelled       - not scanned, cancelled or returned after the AWB was made -> do not ship
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from typing import Any, Iterable
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..config import settings
+from ..models import Channel, OmsOrder, Scan
+from ..timeutil import day_bounds_utc, dispatch_date_for, iso_utc, to_local, today_dispatch_date, utcnow
+from . import cache, tracking
+
+BUCKETS = ("pending", "overdue", "left_unscanned", "cancelled", "scanned", "generated")
+_RANK = {"OPEN": 0, "NOT_PACKED": 1, "PARTIAL_CANCEL": 2, "UNKNOWN": 3, "MOVED": 4, "SHIPPED": 5, "RETURN": 6, "CANCELLED": 7}
+
+
+# Statuses that are NOT pending (see AwbRec.bucket); used to push the "pending" filter into SQL.
+_NOT_PENDING = ("CANCELLED", "RETURN", "SHIPPED", "MOVED")
+
+
+@dataclass
+class AwbRec:
+    awb: str
+    channel_id: int | None
+    status: str
+    awb_at: datetime | None
+    sla: datetime | None
+    order_ids: list[int]
+    scan_id: int | None
+
+    def bucket(self) -> str:
+        if self.scan_id:
+            return "scanned"
+        if self.status in ("CANCELLED", "RETURN"):
+            return "cancelled"
+        if self.status in ("SHIPPED", "MOVED"):
+            return "left_unscanned"
+        return "pending"
+
+    def awb_day(self) -> date | None:
+        return dispatch_date_for(self.awb_at) if self.awb_at else None
+
+
+def collect(db: Session, *, start: datetime | None = None, end: datetime | None = None,
+            channel_id: int | None = None, pending_only: bool = False) -> list[AwbRec]:
+    """One record per AWB (an AWB can carry two orders) with its scan, if any.
+
+    awb_generated_at is always set for orders with an AWB (sync and startup fill it), so the range uses its index
+    directly; only the scan id is read from scans (answered from the tracking_norm index). pending_only leaves out
+    scanned / cancelled / shipped AWBs in SQL instead of loading them all."""
+    q = (
+        select(OmsOrder.id, OmsOrder.tracking_norm, OmsOrder.channel_id, OmsOrder.status_group,
+               OmsOrder.awb_generated_at, OmsOrder.sla_date, Scan.id)
+        .outerjoin(Scan, Scan.tracking_norm == OmsOrder.tracking_norm)
+        .where(OmsOrder.tracking_norm != "")
+    )
+    if start is not None:
+        q = q.where(OmsOrder.awb_generated_at >= start)
+    if end is not None:
+        q = q.where(OmsOrder.awb_generated_at < end)
+    if channel_id:
+        q = q.where(OmsOrder.channel_id == channel_id)
+    if pending_only:
+        q = q.where(OmsOrder.status_group.notin_(_NOT_PENDING), Scan.id.is_(None))
+    counted_from = tracking.start_utc()  # admin-set: AWBs made before this day are not counted
+    if counted_from is not None:
+        q = q.where(OmsOrder.awb_generated_at >= counted_from)
+    recs: dict[str, AwbRec] = {}
+    for oid, awb, cid, status, awb_at, sla, scan_id in db.execute(q):
+        r = recs.get(awb)
+        if r is None:
+            recs[awb] = AwbRec(awb, cid, status, awb_at, sla, [oid], scan_id)
+            continue
+        r.order_ids.append(oid)
+        if _RANK.get(status, 3) < _RANK.get(r.status, 3):
+            r.status = status
+        r.channel_id = r.channel_id or cid
+        if awb_at and (r.awb_at is None or awb_at < r.awb_at):
+            r.awb_at = awb_at
+    return list(recs.values())
+
+
+def _empty() -> dict[str, int]:
+    return {"generated": 0, "scanned": 0, "pending": 0, "overdue": 0, "left_unscanned": 0, "cancelled": 0}
+
+
+def summary(db: Session, day: date) -> dict[str, Any]:
+    """Per-channel buckets for one AWB day, the overdue count and the strip of retained days - in one pass."""
+    today = today_dispatch_date()
+    first = today - timedelta(days=settings.retain_orders_days - 1)
+    start, end = day_bounds_utc(day)
+    today_start, _ = day_bounds_utc(today)
+    since = min(start, day_bounds_utc(first)[0])
+    chans = {c.id: c for c in db.scalars(select(Channel))}
+
+    recs = collect(db, start=since)
+    if day == today:  # still waiting from before the retained days (open orders are never pruned)
+        recs += collect(db, end=since, pending_only=True)
+
+    per: dict[int | None, dict[str, int]] = {}
+    by_day: dict[date, dict[str, int]] = {}
+    for r in recs:
+        b = r.bucket()
+        d = r.awb_day()
+        if d is not None and d >= first:
+            row = by_day.setdefault(d, _empty())
+            row["generated"] += 1
+            row[b] += 1
+        if r.awb_at is not None and start <= r.awb_at < end:
+            row = per.setdefault(r.channel_id, _empty())
+            row["generated"] += 1
+            row[b] += 1
+            if b == "pending" and day < today:
+                row["overdue"] += 1
+        elif day == today and b == "pending" and r.awb_at is not None and r.awb_at < today_start:
+            per.setdefault(r.channel_id, _empty())["overdue"] += 1
+
+    channels = []
+    for cid, row in per.items():
+        c = chans.get(cid) if cid else None
+        base = row["generated"] - row["cancelled"]
+        channels.append({
+            "id": cid, "name": c.name if c else "Unmapped channel", "marketplace": c.marketplace if c else "",
+            "color": c.color if c else "#898781", "sort_order": c.sort_order if c else 9999,
+            **row, "pct": round(100 * row["scanned"] / base) if base > 0 else None,
+        })
+    channels.sort(key=lambda x: (x["sort_order"], x["name"]))
+    totals = _empty()
+    for ch in channels:
+        for k in totals:
+            totals[k] += ch[k]
+    base = totals["generated"] - totals["cancelled"]
+    totals["pct"] = round(100 * totals["scanned"] / base) if base > 0 else None
+    strip = [{"date": (today - timedelta(days=i)).isoformat(), **by_day.get(today - timedelta(days=i), _empty())}
+             for i in range(settings.retain_orders_days - 1, -1, -1)]
+    return {
+        "date": day.isoformat(), "is_today": day == today, "today": today.isoformat(),
+        "retain_days": settings.retain_orders_days, "in_retention": day >= first,
+        "counted_from": (tracking.start_date().isoformat() if tracking.start_date() else None),
+        "totals": totals, "channels": channels, "days": strip,
+    }
+
+
+def summary_cached(db: Session, day: date) -> dict[str, Any]:
+    """summary() for pages that reload it after every scan event (shared for a few seconds; read-only)."""
+    if day != today_dispatch_date():
+        return summary(db, day)
+    return cache.cached(("summary", day), cache.ALL, 3.0, lambda: summary(db, day),
+                        min_interval=settings.cache_min_interval)
+
+
+def records_for(db: Session, day: date, bucket: str, channel_id: int | None) -> list[AwbRec]:
+    today = today_dispatch_date()
+    if bucket == "overdue":
+        recs = collect(db, end=day_bounds_utc(today)[0], channel_id=channel_id, pending_only=True)
+    else:
+        start, end = day_bounds_utc(day)
+        recs = collect(db, start=start, end=end, channel_id=channel_id)
+        if bucket != "generated":
+            recs = [r for r in recs if r.bucket() == bucket]
+    far = datetime.max
+    recs.sort(key=lambda r: (r.sla or far, r.awb_at or far, r.awb))
+    return recs
+
+
+def rows_payload(db: Session, recs: Iterable[AwbRec]) -> list[dict[str, Any]]:
+    from .scanning import order_payload, scan_payload
+
+    recs = list(recs)
+    ids = [i for r in recs for i in r.order_ids]
+    orders = {o.id: o for o in db.scalars(select(OmsOrder).where(OmsOrder.id.in_(ids or [0]))).unique()}
+    scan_ids = [r.scan_id for r in recs if r.scan_id]
+    scans = {s.id: s for s in db.scalars(select(Scan).where(Scan.id.in_(scan_ids or [0]))).unique()}
+    today = today_dispatch_date()
+    out = []
+    for r in recs:
+        o = orders.get(r.order_ids[0])
+        awb_day = r.awb_day()
+        s = scans.get(r.scan_id) if r.scan_id else None
+        out.append({
+            "awb": o.tracking_raw if o else r.awb,
+            "bucket": r.bucket() if not (r.bucket() == "pending" and awb_day and awb_day < today) else "overdue",
+            "status": r.status,
+            "awb_generated_at": iso_utc(r.awb_at),
+            "awb_generated_local": to_local(r.awb_at).strftime("%d-%b %H:%M") if r.awb_at else "",
+            "age_days": (today - awb_day).days if awb_day else None,
+            "sla_breached": bool(r.sla and r.sla < utcnow()),
+            "order": order_payload(o),
+            "scan": scan_payload(s) if s else None,
+        })
+    return out

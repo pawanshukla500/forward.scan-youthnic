@@ -1,0 +1,454 @@
+"""Core forward-scan logic: lookup, duplicate guard, marketplace check, status check."""
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+from sqlalchemy import String, func, literal, or_, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from ..models import Channel, Manifest, OmsOrder, Scan, ScanEvent, SkuPhoto, User
+from ..oms.mapping import normalize_sku_key, normalize_tracking
+from ..timeutil import dispatch_date_for, iso_utc, to_local, today_dispatch_date, utcnow
+from . import cache
+from .realtime import hub
+
+MIN_TRACKING_LEN = 6
+log = logging.getLogger("scan")
+
+# Severity -> what the station plays/shows.
+#   success : green, short beep        (accepted)
+#   warning : amber, double beep       (accepted but needs a look)
+#   error   : red, long buzz           (rejected, not counted)
+
+
+@dataclass
+class Verdict:
+    result: str          # OK | WARN | UNVERIFIED | BLOCK
+    flags: list[str] = field(default_factory=list)
+    message: str = ""
+    outcome: str = ""    # ScanEvent outcome when blocked: WRONG_CHANNEL | BLOCKED
+
+
+def evaluate(orders: list[OmsOrder], selected_channel_id: int, channels: dict[int, Channel]) -> Verdict:
+    """Decide whether a shipment may go into the selected sales channel's dispatch."""
+    if not orders:
+        return Verdict("UNVERIFIED", ["NOT_IN_OMS"], "Not found in OMS yet - accepted as UNVERIFIED, will auto-verify on next sync")
+
+    order_channels = {o.channel_id for o in orders if o.channel_id}
+    if order_channels and selected_channel_id not in order_channels:
+        other = channels.get(next(iter(order_channels)))
+        name = other.name if other else orders[0].channel_label
+        return Verdict("BLOCK", ["WRONG_CHANNEL"], f"WRONG MARKETPLACE - this shipment belongs to {name}", "WRONG_CHANNEL")
+
+    groups = {o.status_group for o in orders}
+    if groups <= {"CANCELLED"}:
+        return Verdict("BLOCK", ["CANCELLED"], "ORDER CANCELLED in OMS - do NOT dispatch, keep aside", "BLOCKED")
+    if "RETURN" in groups:
+        return Verdict("BLOCK", ["RETURN"], "Order is in RETURN status in OMS - do NOT dispatch", "BLOCKED")
+
+    flags: list[str] = []
+    notes: list[str] = []
+    if not order_channels:
+        flags.append("CHANNEL_UNMAPPED")
+        notes.append(f"OMS channel '{orders[0].channel_label}' is not mapped to a sales channel")
+    if "PARTIAL_CANCEL" in groups or "CANCELLED" in groups:
+        flags.append("PARTIAL_CANCEL")
+        notes.append("Some items were cancelled - check the packet contents")
+    if "NOT_PACKED" in groups:
+        flags.append("NOT_RTS")
+        notes.append("OMS still shows this order as New/Pending (not packed)")
+    if "SHIPPED" in groups:
+        flags.append("ALREADY_SHIPPED_IN_OMS")
+        notes.append("OMS already shows this order as shipped")
+    if "MOVED" in groups:
+        flags.append("STATUS_CHANGED")
+        notes.append("Order is no longer Ready-to-ship in OMS - verify status")
+    if flags:
+        return Verdict("WARN", flags, "; ".join(notes))
+    return Verdict("OK", [], "Verified")
+
+
+def find_orders(db: Session, norm: str) -> list[OmsOrder]:
+    """Local lookup: by AWB first; else the barcode is an order / sub-order / invoice number."""
+    if not norm:
+        return []
+    rows = list(db.scalars(select(OmsOrder).where(OmsOrder.tracking_norm == norm)).unique())
+    if rows:
+        return rows
+    sub_list = literal(",", String) + func.upper(OmsOrder.sub_order_ids) + literal(",", String)
+    rows = list(
+        db.scalars(
+            select(OmsOrder)
+            .where(
+                or_(
+                    func.upper(OmsOrder.channel_order_id) == norm,
+                    func.upper(OmsOrder.invoice_id) == norm,
+                    sub_list.like(f"%,{norm},%"),  # exact sub-order id inside the comma list
+                )
+            )
+            .limit(20)
+        ).unique()
+    )
+    return pick_shipment(rows)
+
+
+OPEN_GROUPS = ("OPEN", "NOT_PACKED", "PARTIAL_CANCEL")
+
+
+def pick_shipment(rows: list[OmsOrder]) -> list[OmsOrder]:
+    """One order id can have several shipments (e.g. a re-shipment after a return, each with its own AWB).
+    For an order-id scan keep the single shipment that can still be dispatched; if that is not
+    clear-cut, return them all and the scan asks for the AWB instead."""
+    by_awb: dict[str, list[OmsOrder]] = {}
+    for r in rows:
+        by_awb.setdefault(r.tracking_norm or f"#{r.id}", []).append(r)
+    if len(by_awb) <= 1:
+        return rows
+    dispatchable = [g for g in by_awb.values() if any(o.status_group in OPEN_GROUPS for o in g)]
+    return dispatchable[0] if len(dispatchable) == 1 else rows
+
+
+def order_payload(o: OmsOrder | None) -> dict[str, Any] | None:
+    if not o:
+        return None
+    try:
+        items = json.loads(o.items_json or "[]")
+    except ValueError:
+        items = []
+
+    missing_skus = [normalize_sku_key(i.get("sku")) for i in items if isinstance(i, dict) and not i.get("image_url") and i.get("sku")]
+    if missing_skus:
+        from ..db import SessionLocal
+        try:
+            with SessionLocal() as db:
+                p_rows = db.scalars(select(SkuPhoto).where(SkuPhoto.sku.in_(missing_skus))).all()
+                p_map = {p.sku: (p.image_url, p.title) for p in p_rows}
+                for it in items:
+                    if isinstance(it, dict):
+                        sk = normalize_sku_key(it.get("sku"))
+                        if not it.get("image_url") and sk in p_map:
+                            it["image_url"] = p_map[sk][0]
+                            if not it.get("title") and p_map[sk][1]:
+                                it["title"] = p_map[sk][1]
+        except Exception:
+            pass
+
+    return {
+        "id": o.id,
+        "channel_label": o.channel_label,
+        "channel_id": o.channel_id,
+        "company": o.company,
+        "warehouse": o.warehouse,
+        "channel_order_id": o.channel_order_id,
+        "sub_order_ids": [s for s in (o.sub_order_ids or "").split(",") if s],
+        "invoice_id": o.invoice_id,
+        "invoice_date": iso_utc(o.invoice_date),
+        "order_date": iso_utc(o.order_date),
+        "sla_date": iso_utc(o.sla_date),
+        "tracking": o.tracking_raw,
+        "courier": o.shipping_company,
+        "order_type": o.order_type,
+        "buyer_name": o.buyer_name,
+        "buyer_city": o.buyer_city,
+        "buyer_state": o.buyer_state,
+        "buyer_pincode": o.buyer_pincode,
+        "item_count": o.item_count,
+        "total_qty": o.total_qty,
+        "total_amount": o.total_amount,
+        "currency": o.currency,
+        "items": items,
+        "status_text": o.status_text,
+        "status_group": o.status_group,
+        "synced_at": iso_utc(o.synced_at),
+        "awb_generated_at": iso_utc(o.awb_generated_at or o.invoice_date),
+        # "today" = AWB made today, must go out today; "overdue" = AWB made on an earlier day
+        "dispatch_due": _due(o.awb_generated_at or o.invoice_date),
+    }
+
+
+def _due(awb_at) -> dict[str, Any] | None:
+    if not awb_at:
+        return None
+    age = (today_dispatch_date() - dispatch_date_for(awb_at)).days
+    return {"state": "today" if age <= 0 else "overdue", "age_days": max(0, age)}
+
+
+def scan_order(s: Scan) -> dict[str, Any] | None:
+    """Order details for a scan: live working-set row if still there, else the copy saved with the scan."""
+    if s.order is not None:
+        return order_payload(s.order)
+    if s.order_json:
+        try:
+            return json.loads(s.order_json)
+        except ValueError:
+            return None
+    return None
+
+
+def _snapshot(o: OmsOrder | None) -> str:
+    return json.dumps(order_payload(o), default=str, ensure_ascii=False) if o else ""
+
+
+def scan_payload(s: Scan) -> dict[str, Any]:
+    local = to_local(s.scanned_at)
+    return {
+        "id": s.id,
+        "tracking": s.tracking_raw,
+        "tracking_norm": s.tracking_norm,
+        "dispatch_date": s.dispatch_date.isoformat(),
+        "scanned_at": iso_utc(s.scanned_at),
+        "scanned_at_local": local.strftime("%d-%b %H:%M:%S"),
+        "user": (s.user.full_name or s.user.username) if s.user else "",
+        "user_id": s.user_id,
+        "station": s.station,
+        "channel_id": s.channel_id,
+        "channel_name": s.channel.name if s.channel else "",
+        "marketplace": s.channel.marketplace if s.channel else "",
+        "result": s.result,
+        "flags": [f for f in (s.flags or "").split(",") if f],
+        "message": s.message,
+        "alert": s.alert,
+        "manifest_id": s.manifest_id,
+        "manifest": {
+            "status": s.manifest.status,
+            "closed_at": iso_utc(s.manifest.closed_at),
+            "number": f"M-{s.manifest.dispatch_date.strftime('%Y%m%d')}-{s.manifest.channel_id}-{s.manifest.seq}",
+        } if s.manifest else None,
+        "oms_update_status": s.oms_update_status,
+        "order": scan_order(s),
+    }
+
+
+def _open_manifest(db: Session, day, channel_id: int) -> Manifest:
+    m = db.scalar(
+        select(Manifest)
+        .where(Manifest.dispatch_date == day, Manifest.channel_id == channel_id, Manifest.status == "OPEN")
+        .order_by(Manifest.seq.desc())
+    )
+    if m:
+        return m
+    # Next number after the CLOSED batches only: stations racing to open today's batch then all pick the same
+    # number and the unique key settles it (counting the racer's new open batch too would open a second one).
+    last_seq = db.scalar(
+        select(func.max(Manifest.seq)).where(Manifest.dispatch_date == day, Manifest.channel_id == channel_id,
+                                             Manifest.status == "CLOSED")
+    )
+    m = Manifest(dispatch_date=day, channel_id=channel_id, seq=(last_seq or 0) + 1)
+    db.add(m)
+    try:
+        db.flush()
+    except IntegrityError:
+        # Another station opened today's batch for this channel a split-second earlier (first scans of the day
+        # at the same moment). Nothing else is written yet in this scan, so start over and use theirs.
+        db.rollback()
+        m = db.scalar(
+            select(Manifest)
+            .where(Manifest.dispatch_date == day, Manifest.channel_id == channel_id, Manifest.status == "OPEN")
+            .order_by(Manifest.seq.desc())
+        )
+        if m is None:
+            raise
+    return m
+
+
+def _event(db: Session, *, user: User, station: str, channel_id: int | None, raw: str, norm: str, outcome: str,
+           message: str, scan_id: int | None = None) -> ScanEvent:
+    now = utcnow()
+    ev = ScanEvent(
+        created_at=now, dispatch_date=dispatch_date_for(now), user_id=user.id, station=station[:60],
+        channel_id=channel_id, tracking_raw=raw[:160], tracking_norm=norm[:120], outcome=outcome,
+        message=message[:300], scan_id=scan_id,
+    )
+    db.add(ev)
+    return ev
+
+
+def _duplicate_response(db: Session, existing: Scan, user: User, station: str, channel_id: int, raw: str) -> dict:
+    when = to_local(existing.scanned_at).strftime("%d-%b-%Y %H:%M")
+    who = (existing.user.full_name or existing.user.username) if existing.user else "?"
+    ch = existing.channel.name if existing.channel else ""
+    msg = f"DUPLICATE - already scanned on {when} by {who} ({ch})"
+    _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=existing.tracking_norm,
+           outcome="DUPLICATE", message=msg, scan_id=existing.id)
+    db.commit()
+    payload = {"severity": "error", "code": "DUPLICATE", "message": msg, "scan": scan_payload(existing),
+               "order": order_payload(existing.order)}
+    hub.publish("scan_rejected", {"code": "DUPLICATE", "channel_id": channel_id, "tracking": raw,
+                                  "user": user.full_name or user.username, "message": msg})
+    return payload
+
+
+def process_scan(
+    db: Session,
+    *,
+    user: User,
+    channel_id: int,
+    raw: str,
+    station: str = "",
+    on_unknown: Callable[[], None] | None = None,
+    live: Callable[[str, str, list[OmsOrder]], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    raw = (raw or "").strip()
+    norm = normalize_tracking(raw)
+    channel = db.get(Channel, channel_id)
+    if not channel:
+        return {"severity": "error", "code": "NO_CHANNEL", "message": "Select a valid sales channel first"}
+
+    if len(norm) < MIN_TRACKING_LEN:
+        msg = f"Invalid barcode '{raw[:40]}' - too short for a tracking ID"
+        _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm, outcome="INVALID", message=msg)
+        db.commit()
+        return {"severity": "error", "code": "INVALID", "message": msg}
+
+    orders = find_orders(db, norm)
+    key = _dedupe_key(norm, orders)
+    # Duplicates are answered from the database alone - no API credit spent on them.
+    existing = db.scalar(select(Scan).where(Scan.tracking_norm == key))
+    if existing:
+        return _duplicate_response(db, existing, user, station, channel_id, raw)
+
+    # Live fetch from OMSGuru for fresh status/details (falls back to the local copy if busy).
+    live_info: dict[str, Any] = {"live": "off"}
+    if live:
+        # Hand the connection back while OMSGuru is asked (up to LIVE_TIMEOUT_SECONDS): the lookup uses its own
+        # sessions, and holding two connections per scan ran the pool dry at 15+ stations (load test 3 Oct 2026).
+        db.commit()
+        try:
+            live_info = live(raw, norm, orders)
+        except Exception:  # noqa: BLE001 - a lookup problem must never block dispatch
+            log.exception("live lookup failed for %s", raw)
+            live_info = {"live": "error"}
+        if live_info.get("changed"):
+            db.expire_all()
+            orders = find_orders(db, norm)
+            new_key = _dedupe_key(norm, orders)
+            if new_key != key:
+                key = new_key
+                existing = db.scalar(select(Scan).where(Scan.tracking_norm == key))
+                if existing:
+                    linked = _linked_response(db, existing, user, station, channel_id, raw)
+                    return linked or _duplicate_response(db, existing, user, station, channel_id, raw)
+
+    awbs = sorted({o.tracking_norm for o in orders if o.tracking_norm})
+    if len(awbs) > 1 and norm not in awbs:
+        msg = (f"Order {orders[0].channel_order_id} has {len(awbs)} shipments in OMS ({', '.join(awbs[:4])}) - "
+               "scan the AWB barcode on this packet instead")
+        _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm, outcome="INVALID", message=msg)
+        db.commit()
+        return {"severity": "error", "code": "AMBIGUOUS", "message": msg, "live": live_info.get("live"), "live_ms": live_info.get("ms")}
+
+    channels = {c.id: c for c in db.scalars(select(Channel))}
+    verdict = evaluate(orders, channel_id, channels)
+    primary = orders[0] if orders else None
+
+    if verdict.result == "BLOCK":
+        _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=key,
+               outcome=verdict.outcome, message=verdict.message)
+        db.commit()
+        hub.publish("scan_rejected", {"code": verdict.outcome, "channel_id": channel_id, "tracking": raw,
+                                      "user": user.full_name or user.username, "message": verdict.message})
+        return {"severity": "error", "code": verdict.flags[0] if verdict.flags else verdict.outcome,
+                "message": verdict.message, "order": order_payload(primary), "live": live_info.get("live"), "live_ms": live_info.get("ms")}
+
+    now = utcnow()
+    day = dispatch_date_for(now)
+    manifest = _open_manifest(db, day, channel_id)
+    scan = Scan(
+        tracking_norm=key, tracking_raw=(primary.tracking_raw if primary and primary.tracking_raw else raw)[:160],
+        dispatch_date=day, scanned_at=now, user_id=user.id, station=station[:60], channel_id=channel_id,
+        order_id=primary.id if primary else None, order_json=_snapshot(primary), manifest_id=manifest.id,
+        result=verdict.result,
+        flags=",".join(verdict.flags), message=verdict.message[:300],
+    )
+    db.add(scan)
+    try:
+        db.flush()
+    except IntegrityError:
+        # Another station saved the same AWB a split-second earlier.
+        db.rollback()
+        existing = db.scalar(select(Scan).where(Scan.tracking_norm == key))
+        if existing:
+            return _duplicate_response(db, existing, user, station, channel_id, raw)
+        raise
+    outcome = {"OK": "ACCEPTED", "WARN": "WARN", "UNVERIFIED": "UNVERIFIED"}[verdict.result]
+    _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=key, outcome=outcome,
+           message=verdict.message, scan_id=scan.id)
+    db.commit()
+    db.refresh(scan)
+
+    if verdict.result == "UNVERIFIED" and on_unknown:
+        on_unknown()
+
+    payload = scan_payload(scan)
+    hub.publish("scan", payload)
+    severity = {"OK": "success", "WARN": "warning", "UNVERIFIED": "warning"}[verdict.result]
+    code = {"OK": "OK", "WARN": verdict.flags[0] if verdict.flags else "WARN", "UNVERIFIED": "NOT_IN_OMS"}[verdict.result]
+    return {"severity": severity, "code": code, "message": verdict.message, "scan": payload, "order": payload["order"],
+            "live": live_info.get("live"), "live_ms": live_info.get("ms")}
+
+
+def _dedupe_key(norm: str, orders: list[OmsOrder]) -> str:
+    """If an order / invoice barcode was scanned, dedupe on that order's AWB instead."""
+    awbs = {o.tracking_norm for o in orders if o.tracking_norm}
+    if orders and norm not in awbs and len(awbs) == 1:
+        return next(iter(awbs))
+    return norm
+
+
+def _linked_response(db: Session, existing: Scan, user: User, station: str, channel_id: int, raw: str) -> dict | None:
+    """The barcode just scanned (e.g. the order id) resolved an earlier UNVERIFIED scan of the same packet."""
+    just_resolved = existing.resolved_at is not None and (utcnow() - existing.resolved_at).total_seconds() < 60
+    fresh_alert = existing.alert.startswith("AFTER SCAN") and existing.result == "UNVERIFIED"
+    if not (just_resolved or fresh_alert):
+        return None
+    payload = scan_payload(existing)
+    if existing.alert:
+        msg = existing.alert.replace("AFTER SCAN: ", "")
+        severity, code = "error", "ALERT"
+    else:
+        msg = f"Order found in OMSGuru - the earlier scan of {existing.tracking_raw} is now {existing.result}"
+        severity, code = ("success" if existing.result == "OK" else "warning"), "LINKED"
+    _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=existing.tracking_norm,
+           outcome="ACCEPTED" if severity != "error" else "BLOCKED", message=msg, scan_id=existing.id)
+    db.commit()
+    return {"severity": severity, "code": code, "message": msg, "scan": payload, "order": payload["order"], "live": "fresh"}
+
+
+def reverify_scans(db: Session, tracking_norms: set[str]) -> list[dict[str, Any]]:
+    """Re-check stored scans after an OMS sync: resolve UNVERIFIED ones and raise alerts on bad news."""
+    if not tracking_norms:
+        return []
+    changed: list[dict[str, Any]] = []
+    channels = {c.id: c for c in db.scalars(select(Channel))}
+    norms = list(tracking_norms)
+    for i in range(0, len(norms), 500):
+        for scan in db.scalars(select(Scan).where(Scan.tracking_norm.in_(norms[i:i + 500]))).unique():
+            orders = list(db.scalars(select(OmsOrder).where(OmsOrder.tracking_norm == scan.tracking_norm)).unique())
+            if not orders:
+                continue
+            verdict = evaluate(orders, scan.channel_id, channels)
+            before = (scan.result, scan.alert, scan.order_id)
+            scan.order = orders[0]
+            scan.order_json = _snapshot(orders[0])
+            if verdict.result == "BLOCK":
+                scan.alert = ("AFTER SCAN: " + verdict.message)[:300]
+            elif scan.alert.startswith("AFTER SCAN"):
+                scan.alert = ""
+            if verdict.result != "BLOCK":
+                if scan.result == "UNVERIFIED":
+                    scan.resolved_at = utcnow()
+                scan.result = verdict.result
+                scan.flags = ",".join(verdict.flags)
+                scan.message = verdict.message[:300]
+            if (scan.result, scan.alert, orders[0].id) != before:
+                changed.append(scan_payload(scan))
+    if changed:
+        db.commit()
+        for p in changed:
+            cache.invalidate(p["channel_id"])
+            hub.publish("scan_updated", p)
+    return changed
