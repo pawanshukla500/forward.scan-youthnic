@@ -38,8 +38,13 @@ jobs:
           distribution: "temurin"
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # ubuntu runners already ship the Android SDK - just make sure the packages
+      # Capacitor needs are present (the setup-android action is broken: it asks
+      # sdkmanager for the long-removed "tools" package and fails).
+      - name: Install Android Packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Install Dependencies
         run: npm ci
