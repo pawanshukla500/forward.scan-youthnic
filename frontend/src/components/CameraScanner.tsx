@@ -80,11 +80,13 @@ export function CameraScanner({ paused, checking, onCode, onClose }: { paused: b
           setError("This device cannot scan barcodes. Use Manual entry.");
           return;
         }
+        // The APK declares the camera in its manifest (CI injects it), so this shows the
+        // system Allow/Deny dialog on first use. Point anyone stuck to App info → Permissions.
         const perm = await BarcodeScanner.checkPermissions().catch(() => null);
         if (!cancelled && perm?.camera !== "granted") {
           const req = await BarcodeScanner.requestPermissions().catch(() => null);
           if (!req || req.camera !== "granted") {
-            setError("Camera permission was blocked. Allow camera access for Forward Scan, then try again.");
+            setError("Camera access is needed to scan. Open App info → Permissions → Camera → Allow, then try again.");
             return;
           }
         }
@@ -207,6 +209,9 @@ export function CameraScanner({ paused, checking, onCode, onClose }: { paused: b
             : nativeState === "starting"
               ? "Starting the scanner…"
               : "Point at the AWB barcode (straight lines, not the square QR)"}
+        </span>
+        <span className="max-w-[420px] text-xs opacity-80 [text-shadow:0_1px_3px_#000]">
+          The rear camera only reads barcodes on this device - nothing is recorded or uploaded. Only your scans go to the Forward Scan server.
         </span>
         {nativeState === "ready" && !checking && (
           <button

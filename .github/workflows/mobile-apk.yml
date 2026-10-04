@@ -74,11 +74,35 @@ jobs:
           if [ ! -d android ]; then npx cap add android; fi
           npx cap sync android
 
+      # The ML Kit plugin does not declare CAMERA itself and neither does the default
+      # Capacitor manifest - without this the app shows "No permissions requested" and the
+      # system can never grant camera access, so scanning fails with "permission blocked".
+      - name: Declare Camera Permission
+        run: |
+          python3 - <<'EOF'
+          from pathlib import Path
+          m = Path("android/app/src/main/AndroidManifest.xml")
+          s = m.read_text()
+          if "android.permission.CAMERA" not in s:
+              assert "</manifest>" in s
+              s = s.replace("</manifest>", '    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera.any" android:required="false" />\n</manifest>')
+              m.write_text(s)
+          assert "android.permission.CAMERA" in m.read_text()
+          print("camera permission declared")
+          EOF
+
       - name: Build Debug APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
+
+      # Ground truth for what App info will list: fail the job if CAMERA is missing from the APK.
+      - name: Verify Camera Permission in APK
+        run: |
+          AAPT="$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt"
+          "$AAPT" dump badging android/app/build/outputs/apk/debug/app-debug.apk | tee /tmp/badging.txt
+          grep -q "uses-permission: name='android.permission.CAMERA'" /tmp/badging.txt
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
