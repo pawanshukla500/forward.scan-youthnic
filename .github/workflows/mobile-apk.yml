@@ -1,8 +1,9 @@
 name: Build Android APK
 
 # Installable app for the warehouse phones: bundles the web UI with Capacitor and a
-# native ML Kit barcode scanner. Produces an unsigned debug APK artifact that installs
-# directly on Android (allow "Install unknown apps" once). Run from the Actions tab.
+# native ML Kit barcode scanner. Produces an unsigned debug APK that installs
+# directly on Android (allow "Install unknown apps" once). Run from the Actions tab -
+# the APK lands on a GitHub Release so phones can download it straight from GitHub.
 # Login works with the same username/password; the app signs in by Bearer token and
 # stays signed in on the device (no cookies needed).
 
@@ -13,6 +14,13 @@ on:
         description: "Server the app talks to"
         required: true
         default: "https://scan.youthnic.shop"
+      release_tag:
+        description: "Release tag the APK is published under (reused/rolling)"
+        required: true
+        default: "forward-scan-app"
+
+permissions:
+  contents: write
 
 jobs:
   apk:
@@ -74,3 +82,20 @@ jobs:
           name: forward-scan-app
           path: frontend/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Rename APK for Release
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk android/app/build/outputs/apk/debug/forward-scan-app.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: Forward Scan app (${{ inputs.release_tag }})
+          body: |
+            Installable Android app for the warehouse phones. Built from ${{ github.sha }} against ${{ inputs.api_url }}.
+
+            Install: download forward-scan-app.apk on the phone, allow "Install unknown apps" once, then sign in with the same Forward Scan username and password.
+          prerelease: true
+          make_latest: true
+          files: frontend/android/app/build/outputs/apk/debug/forward-scan-app.apk
+          fail_on_unmatched_files: true
