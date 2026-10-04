@@ -951,16 +951,20 @@ def _store_channels(chans: list[dict], whs: list[dict]) -> int:
 def _store_sku_photos(listings: list[dict], marketplace: str) -> int:
     stored = 0
     now = utcnow()
+    by_sku: dict[str, tuple[str, str]] = {}
+    for l in listings:
+        raw_sku = l.get("sku_name") or l.get("sku_code") or l.get("sku") or l.get("product_sku")
+        sku_norm = normalize_sku_key(raw_sku)
+        if not sku_norm:
+            continue
+        img = normalize_image_url(l.get("img_url") or l.get("image_url") or l.get("imageUrl") or l.get("image"))
+        if not img:
+            continue
+        title = str(l.get("title") or l.get("name") or "").strip()
+        by_sku[sku_norm] = (title, img)
+
     with session_scope() as db:
-        for l in listings:
-            raw_sku = l.get("sku_name") or l.get("sku_code") or l.get("sku") or l.get("product_sku")
-            sku_norm = normalize_sku_key(raw_sku)
-            if not sku_norm:
-                continue
-            img = normalize_image_url(l.get("img_url") or l.get("image_url") or l.get("imageUrl") or l.get("image"))
-            if not img:
-                continue
-            title = str(l.get("title") or l.get("name") or "").strip()
+        for sku_norm, (title, img) in by_sku.items():
             existing = db.get(SkuPhoto, sku_norm)
             if existing is None:
                 db.add(SkuPhoto(sku=sku_norm, title=title, image_url=img, marketplace=marketplace, updated_at=now))
