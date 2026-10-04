@@ -43,6 +43,9 @@ jobs:
       # sdkmanager for the long-removed "tools" package and fails).
       - name: Install Android Packages
         run: |
+          TOOLS="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin"
+          [ -d "$TOOLS" ] || TOOLS=$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin | head -1)
+          export PATH="$TOOLS:$PATH"
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
