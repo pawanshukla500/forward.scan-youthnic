@@ -1,4 +1,4 @@
-import { CloudDownload, CloudOff, Hourglass, RefreshCwOff, Scale } from "lucide-react";
+import { ChevronDown, CloudDownload, CloudOff, Hourglass, RefreshCwOff, Scale } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { useLive } from "../live";
@@ -19,10 +19,13 @@ interface Brief {
 const STALE_MINUTES = 10;
 
 function Notice({ tone, icon, title, children }: { tone: "crit" | "warn" | "info"; icon: ReactNode; title: string; children: ReactNode }) {
+  // Phones: a one-line strip (icon + title + chevron); tap to expand the full text.
+  // The full banner ate half the scan screen on mobile.
+  const [open, setOpen] = useState(false);
   return (
     <div
       className={cx(
-        "sync-notice flex items-start gap-3 rounded-lg px-4 py-3 text-sm",
+        "sync-notice flex items-start gap-2.5 rounded-lg px-3 py-2 text-sm md:gap-3 md:px-4 md:py-3",
         tone === "crit" ? "bg-crit-wash text-crit-ink" : tone === "warn" ? "bg-warn-wash text-warn-ink" : "bg-info-wash text-ink-2",
       )}
       role={tone === "crit" ? "alert" : "status"}
@@ -30,8 +33,20 @@ function Notice({ tone, icon, title, children }: { tone: "crit" | "warn" | "info
       <span className="mt-0.5 shrink-0" aria-hidden>
         {icon}
       </span>
-      <div>
-        <b className={tone === "info" ? "text-ink" : undefined}>{title}</b> - {children}
+      <div className="min-w-0 flex-1">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className="flex min-h-9 w-full cursor-pointer items-center gap-1.5 text-left md:hidden"
+        >
+          <b className="min-w-0 flex-1 truncate">{title}</b>
+          <ChevronDown className={cx("size-4 shrink-0 transition-transform", open && "rotate-180")} aria-hidden />
+        </button>
+        {open && <div className="pb-1 md:hidden">{children}</div>}
+        <div className="hidden md:block">
+          <b className={tone === "info" ? "text-ink" : undefined}>{title}</b> - {children}
+        </div>
       </div>
     </div>
   );
