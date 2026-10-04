@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type Keyboard
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, download, qs, type Channel, type QueueRow, type Scan, type ScanContext, type ScanResponse } from "../api";
 import { isSupervisor, useAuth } from "../App";
-import { CameraScanner, cameraProblem } from "../components/CameraScanner";
+import { CameraScanner, cameraProblem, looksLikeQr } from "../components/CameraScanner";
 import { CODE_TITLE, fmtMins, JourneyCard, KIND_META, scanKind, ShipmentCard, type ScanKind } from "../components/ShipmentCard";
 import { SyncNotice } from "../components/SyncNotice";
 import { Button, cx, Empty, IconButton, ResultPill, Skeleton, Toast } from "../components/ui";
@@ -87,6 +87,8 @@ export default function ScanStation() {
   const inputRef = useRef<HTMLInputElement>(null);
   const queue = useRef<string[]>([]);
   const running = useRef(false);
+  // client-side guard against the camera firing the same label twice: normalised value + time
+  const lastSubmit = useRef<{ norm: string; at: number }>({ norm: "", at: 0 });
   const holdRef = useRef(false);
   holdRef.current = hold;
   const camRef = useRef(false);
@@ -129,11 +131,11 @@ export default function ScanStation() {
     api<{ channels: Channel[] }>("/api/channels").then((r) => setChannels(r.channels.filter((c) => c.scan_enabled)));
   }, []);
 
-  // Keep the scan box focused: USB scanners type into whatever has focus. Not on a phone using the camera
-  // (focusing would pop the keyboard over the camera view).
+  // Keep the scan box focused: USB scanners type into whatever has focus. Not on a phone with the
+  // camera view open (focusing would pop the keyboard over the camera view).
   useEffect(() => {
     const t = window.setInterval(() => {
-      if (isPhone() && (mode === "camera" || camRef.current)) return;
+      if (isPhone() && camRef.current) return;
       const a = document.activeElement as HTMLElement | null;
       const typing =
         a && (a.tagName === "INPUT" || a.tagName === "SELECT" || a.tagName === "TEXTAREA" || a.closest("[role=menu],[role=dialog]")) && a !== inputRef.current;
@@ -229,16 +231,28 @@ export default function ScanStation() {
   }, [cid, station, feedback, prefs.holdOnError, ctxSoon]);
 
   const submitRaw = useCallback(
-    (raw: string) => {
+    (raw: string, fromCamera = false) => {
       unlockAudio();
       if (holdRef.current) return;
       const v = raw.trim();
       if (!v) return;
+      // The camera must never submit QR payloads (URLs / QR text on the label): ignore silently so the
+      // packer is not spammed with errors while aiming at the AWB barcode. Typed / hardware-scanner input
+      // still goes to the server, which answers INVALID with guidance.
+      if (fromCamera && looksLikeQr(v)) return;
+      const n = norm(v);
+      const now = Date.now();
+      // Same label re-read within 8s (label still in view) or already waiting in the queue: drop it.
+      if (n && n === lastSubmit.current.norm && now - lastSubmit.current.at < 8000) return;
+      if (n && queue.current.some((q) => norm(q) === n)) return;
+      lastSubmit.current = { norm: n, at: now };
       queue.current.push(v);
       void pump();
     },
     [pump],
   );
+
+  const submitCameraCode = useCallback((code: string) => submitRaw(code, true), [submitRaw]);
 
   function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     unlockAudio();
@@ -439,7 +453,7 @@ export default function ScanStation() {
         </div>
         {mode === "camera" && camOpen && (
           <div className="md:hidden">
-            <CameraScanner paused={hold} onCode={submitRaw} onClose={() => pickMode("manual")} />
+            <CameraScanner paused={hold || busy} checking={busy} onCode={submitCameraCode} onClose={() => pickMode("manual")} />
           </div>
         )}
         {mode === "camera" && !camOpen && (
@@ -452,7 +466,7 @@ export default function ScanStation() {
           </button>
         )}
 
-        <form onSubmit={onSubmit} className={cx("scan-form", mode === "camera" && "camera-mode")}>
+        <form onSubmit={onSubmit} className={cx("scan-form", mode === "camera" && camOpen && "camera-mode")}>
           <ScanLine className="size-6 shrink-0" aria-hidden />
           <input
             id="scanbox"

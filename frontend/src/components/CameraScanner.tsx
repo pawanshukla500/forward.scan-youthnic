@@ -7,13 +7,38 @@ import { useEffect, useRef, useState } from "react";
 
 interface Detected {
   rawValue: string;
+  format?: string;
 }
 interface DetectorCtor {
   new (o: { formats: string[] }): { detect(src: CanvasImageSource): Promise<Detected[]> };
   getSupportedFormats?: () => Promise<string[]>;
 }
 
-const FORMATS = ["code_128", "code_39", "code_93", "codabar", "itf", "ean_13", "ean_8", "upc_a", "upc_e", "qr_code", "data_matrix", "pdf417"];
+/* AWB / courier labels use 1-D barcodes (usually Code 128). The square QR / DataMatrix /
+   PDF417 codes printed on the same label (UPI, returns, apps) must never become scans,
+   so 2-D formats are deliberately not requested - and filtered again on every read. */
+const FORMATS = ["code_128", "code_39", "code_93", "codabar", "itf", "ean_13", "ean_8", "upc_a", "upc_e"];
+const IGNORED_FORMATS = new Set(["qr_code", "data_matrix", "pdf417", "aztec"]);
+
+/** Same label held in front of the camera: ignore re-reads for this long (was 4s -> duplicate spam). */
+const SAME_CODE_SUPPRESS_MS = 8000;
+/** Any two camera reads closer than this are the same frame seen twice - drop the second. */
+const ANY_CODE_COOLDOWN_MS = 2200;
+
+/** QR payloads / URLs / multi-word text can never be an AWB - drop them before they reach the server. */
+export function looksLikeQr(value: string): boolean {
+  const v = value.trim();
+  if (!v) return true;
+  if (/\s/.test(v)) return true;
+  const low = v.toLowerCase();
+  if (/^[a-z][a-z0-9+.-]*:\/\//.test(low) || v.includes("://")) return true;
+  if (/^(https?:|www\.|upi:|mailto:|tel:|smsto:|sms:|geo:|wifi:|begin:|mecard|vcard)/i.test(v)) return true;
+  if (v.length > 60) return true;
+  const norm = v.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (norm.length < 6 || norm.length > 40) return true;
+  if (/^(HTTP|WWW|UPI|VCARD|MECARD|WIFI)/.test(norm)) return true;
+  return false;
+}
 
 export function cameraProblem(): string | null {
   if (!window.isSecureContext)
@@ -24,7 +49,7 @@ export function cameraProblem(): string | null {
   return null;
 }
 
-export function CameraScanner({ paused, onCode, onClose }: { paused: boolean; onCode: (value: string) => void; onClose: () => void }) {
+export function CameraScanner({ paused, checking, onCode, onClose }: { paused: boolean; checking?: boolean; onCode: (value: string) => void; onClose: () => void }) {
   const video = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(cameraProblem);
   const pausedRef = useRef(paused);
@@ -39,6 +64,7 @@ export function CameraScanner({ paused, onCode, onClose }: { paused: boolean; on
     let stopped = false;
     let lastCode = "";
     let lastSeen = 0;
+    let lastEmittedAt = 0;
     (async () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -59,20 +85,28 @@ export function CameraScanner({ paused, onCode, onClose }: { paused: boolean; on
           if (stopped) return;
           if (!pausedRef.current && v.readyState >= 2) {
             try {
-              const value = (await detector.detect(v))[0]?.rawValue?.trim();
+              const found = (await detector.detect(v))[0];
+              const format = (found?.format ?? "").toLowerCase();
+              const value = found?.rawValue?.trim();
               const now = Date.now();
-              if (value) {
-                if (value !== lastCode || now - lastSeen > 4000) {
-                  lastCode = value;
-                  onCodeRef.current(value);
+              if (value && !IGNORED_FORMATS.has(format) && !looksLikeQr(value)) {
+                if (value !== lastCode || now - lastSeen > SAME_CODE_SUPPRESS_MS) {
+                  if (now - lastEmittedAt > ANY_CODE_COOLDOWN_MS) {
+                    lastCode = value;
+                    lastEmittedAt = now;
+                    onCodeRef.current(value);
+                  }
                 }
                 lastSeen = now;
+              } else if (value) {
+                // QR / junk in view: do not submit, and do not let it block the real barcode.
+                lastSeen = value === lastCode ? now : lastSeen;
               }
             } catch {
               /* a frame that cannot be decoded - keep going */
             }
           }
-          timer = window.setTimeout(tick, 140);
+          timer = window.setTimeout(tick, 200);
         };
         void tick();
       } catch (e) {
@@ -105,14 +139,18 @@ export function CameraScanner({ paused, onCode, onClose }: { paused: boolean; on
     );
 
   return (
-    <div className="relative -mx-4 mt-4 h-[270px] overflow-hidden bg-[#07100c] sm:-mx-6">
+    <div className="relative -mx-4 mt-4 h-[300px] overflow-hidden bg-[#07100c] sm:-mx-6">
       <video ref={video} muted playsInline className="size-full object-cover" aria-label="Rear camera preview" />
-      <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-white">
-        <div className="relative grid h-[110px] w-[78%] place-items-center rounded-sm border-2 border-white/85 shadow-[0_0_0_999px_rgba(0,0,0,0.32)]">
+      <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center text-white">
+        <div className="relative grid h-[120px] w-full max-w-[420px] place-items-center rounded-sm border-2 border-white/85 shadow-[0_0_0_999px_rgba(0,0,0,0.32)]">
           {!paused && <i className="scanline absolute inset-x-[3%] h-0.5 bg-[#65e4ad] shadow-[0_0_8px_#65e4ad]" />}
         </div>
         <span className="text-sm font-medium [text-shadow:0_1px_3px_#000]">
-          {paused ? "Paused - put the packet aside, then press Continue" : "Point the rear camera at the AWB barcode"}
+          {paused
+            ? "Paused - put the packet aside, then press Continue"
+            : checking
+              ? "Checking OMSGuru… hold the packet steady"
+              : "Point the rear camera at the AWB barcode (straight lines, not the square QR)"}
         </span>
       </div>
       <button

@@ -17,6 +17,7 @@ from . import cache
 from .realtime import hub
 
 MIN_TRACKING_LEN = 6
+MAX_TRACKING_LEN = 40
 log = logging.getLogger("scan")
 
 # Severity -> what the station plays/shows.
@@ -267,6 +268,34 @@ def _event(db: Session, *, user: User, station: str, channel_id: int | None, raw
     return ev
 
 
+def looks_like_qr(raw: str, norm: str) -> bool:
+    """Square QR / DataMatrix codes on the label (URLs, UPI, app links, vCards) are not AWB barcodes.
+    They must be rejected as INVALID, never stored as UNVERIFIED scans."""
+    v = (raw or "").strip()
+    if not v:
+        return True
+    if any(ch.isspace() for ch in v):
+        return True
+    low = v.lower()
+    if "://" in v:
+        return True
+    if low.startswith(("http:", "https:", "www.", "upi:", "mailto:", "tel:", "smsto:", "sms:",
+                        "geo:", "wifi:", "begin:", "mecard", "vcard")):
+        return True
+    if len(v) > 60 or len(norm) > MAX_TRACKING_LEN:
+        return True
+    if norm.startswith(("HTTP", "WWW", "UPI", "VCARD", "MECARD", "WIFI")):
+        return True
+    return False
+
+
+def _invalid(db: Session, *, user: User, station: str, channel_id: int, raw: str, norm: str, message: str) -> dict:
+    _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm, outcome="INVALID",
+           message=message)
+    db.commit()
+    return {"severity": "error", "code": "INVALID", "message": message}
+
+
 def _duplicate_response(db: Session, existing: Scan, user: User, station: str, channel_id: int, raw: str) -> dict:
     when = to_local(existing.scanned_at).strftime("%d-%b-%Y %H:%M")
     who = (existing.user.full_name or existing.user.username) if existing.user else "?"
@@ -298,11 +327,17 @@ def process_scan(
     if not channel:
         return {"severity": "error", "code": "NO_CHANNEL", "message": "Select a valid sales channel first"}
 
+    if looks_like_qr(raw, norm):
+        return _invalid(
+            db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm,
+            message="QR code detected - scan the AWB barcode (the straight lines), not the square QR code",
+        )
+
     if len(norm) < MIN_TRACKING_LEN:
-        msg = f"Invalid barcode '{raw[:40]}' - too short for a tracking ID"
-        _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm, outcome="INVALID", message=msg)
-        db.commit()
-        return {"severity": "error", "code": "INVALID", "message": msg}
+        return _invalid(
+            db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm,
+            message=f"Invalid barcode '{raw[:40]}' - too short for a tracking ID",
+        )
 
     orders = find_orders(db, norm)
     key = _dedupe_key(norm, orders)
