@@ -15,6 +15,7 @@ import { api, download, qs, type Channel, type QueueRow, type Scan, type ScanCon
 import { isSupervisor, useAuth } from "../App";
 import { CameraScanner, cameraProblem, looksLikeQr } from "../components/CameraScanner";
 import { CODE_TITLE, fmtMins, JourneyCard, KIND_META, scanKind, ShipmentCard, type ScanKind } from "../components/ShipmentCard";
+import { ResultSheet } from "../components/ResultSheet";
 import { SyncNotice } from "../components/SyncNotice";
 import { Button, cx, Empty, IconButton, ResultPill, Skeleton, Toast } from "../components/ui";
 import { useLive, useThrottled } from "../live";
@@ -84,6 +85,8 @@ export default function ScanStation() {
   const [flagging, setFlagging] = useState(false);
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [now, setNow] = useState(Date.now());
+  // phone verdict sheet dismissed for this result (X / backdrop / Escape): the inline card below keeps the details
+  const [sheetGone, setSheetGone] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const queue = useRef<string[]>([]);
   const running = useRef(false);
@@ -220,7 +223,10 @@ export default function ScanStation() {
         setCtx((c) => (c ? { ...c, queue: c.queue.filter((q) => norm(q.awb) !== norm(saved.tracking_norm) && norm(q.awb) !== norm(saved.tracking)) } : c));
         ctxSoon();
       }
-      if (res.severity === "error" && prefs.holdOnError) {
+      // Pause only when the packet must be put aside (wrong marketplace, cancelled/return, invalid,
+      // connection error). Duplicates are informational - the packet is already counted, so the phone
+      // keeps scanning and just pops the verdict; otherwise every repeat packet would freeze the line.
+      if (prefs.holdOnError && (scanKind(res) === "stop" || res.code === "NETWORK")) {
         queue.current = []; // anything scanned after the error must be rescanned
         setHold(true);
         break;
@@ -328,6 +334,13 @@ export default function ScanStation() {
     if (!(isPhone() && camOpen)) inputRef.current?.focus();
   }
 
+  // Phone verdict sheet primary action when the scanner is paused: put the packet aside and go on.
+  function resumeNext() {
+    setHold(false);
+    setLast(null);
+    if (!(isPhone() && camOpen)) inputRef.current?.focus();
+  }
+
   function updatePrefs(p: Partial<Prefs>) {
     const n = { ...prefs, ...p };
     setPrefs(n);
@@ -406,7 +419,7 @@ export default function ScanStation() {
               type="button"
               onClick={() => updatePrefs({ holdOnError: !prefs.holdOnError })}
               aria-pressed={prefs.holdOnError}
-              title="Stop the scanner after a rejected scan until someone presses Enter"
+              title="Stop the scanner after a rejected scan (wrong marketplace, cancelled, invalid) until someone presses Continue. Duplicates never stop the line."
               className={cx(
                 "ease-ui hidden min-h-9 cursor-pointer items-center gap-1.5 rounded-full border px-3 text-sm font-semibold sm:inline-flex",
                 prefs.holdOnError ? "border-accent/40 bg-accent-wash text-accent-ink" : "border-line-strong text-muted",
@@ -700,6 +713,20 @@ export default function ScanStation() {
         <Toast kind={toast.kind} onClose={() => setToast(null)}>
           {toast.text}
         </Toast>
+      )}
+
+      {/* phones: immediate verdict pop-up over the camera flow - the next scan replaces it,
+          X / backdrop / Escape dismisses it while the inline card below keeps the details */}
+      {last && isPhone() && sheetGone !== last.at && (
+        <ResultSheet
+          last={last}
+          channelName={channel?.name ?? "..."}
+          held={hold}
+          canUndo={canUndoLast}
+          onPrimary={() => (hold ? resumeNext() : next())}
+          onDismiss={() => setSheetGone(last.at)}
+          onUndo={() => last.res.scan && void undo(last.res.scan)}
+        />
       )}
     </div>
   );
