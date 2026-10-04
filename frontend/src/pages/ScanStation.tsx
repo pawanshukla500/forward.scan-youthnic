@@ -5,7 +5,6 @@ import {
   Keyboard,
   Maximize2,
   Minimize2,
-  PauseCircle,
   ScanLine,
   Undo2,
 } from "lucide-react";
@@ -23,14 +22,13 @@ import { playCue, unlockAudio } from "../sound";
 
 interface Prefs {
   sound: boolean;
-  holdOnError: boolean;
 }
 
 function loadPrefs(): Prefs {
   try {
-    return { sound: true, holdOnError: true, ...JSON.parse(localStorage.getItem("fs_prefs") || "{}") };
+    return { sound: true, ...JSON.parse(localStorage.getItem("fs_prefs") || "{}") };
   } catch {
-    return { sound: true, holdOnError: true };
+    return { sound: true };
   }
 }
 
@@ -72,7 +70,6 @@ export default function ScanStation() {
   const [mineToday, setMineToday] = useState(0);
   const [last, setLast] = useState<Last | null>(null);
   const [value, setValue] = useState("");
-  const [hold, setHold] = useState(false);
   const [busy, setBusy] = useState(false);
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const [station, setStation] = useState(() => read("fs_station"));
@@ -92,8 +89,6 @@ export default function ScanStation() {
   const running = useRef(false);
   // client-side guard against the camera firing the same label twice: normalised value + time
   const lastSubmit = useRef<{ norm: string; at: number }>({ norm: "", at: 0 });
-  const holdRef = useRef(false);
-  holdRef.current = hold;
   const camRef = useRef(false);
   camRef.current = camOpen;
 
@@ -153,6 +148,16 @@ export default function ScanStation() {
     // only on first open of the page
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Continuous flow on phones: the verdict sheet dismisses itself (OK fastest, stop verdicts linger),
+  // so the packer never has to tap Next/Continue. Dismissing the sheet by hand cancels the timer,
+  // leaving the inline card below readable; the next scan starts a fresh timer.
+  useEffect(() => {
+    if (!last || !isPhone() || sheetGone === last.at) return;
+    const ms = { ok: 1500, duplicate: 2200, notfound: 2500, check: 3000, stop: 4500 }[scanKind(last.res)] ?? 2500;
+    const t = window.setTimeout(() => setLast(null), ms);
+    return () => window.clearTimeout(t);
+  }, [last, sheetGone]);
 
   // One sound per kind of result (no voice): OK, duplicate, not found, check, stop.
   const feedback = useCallback(
@@ -223,23 +228,16 @@ export default function ScanStation() {
         setCtx((c) => (c ? { ...c, queue: c.queue.filter((q) => norm(q.awb) !== norm(saved.tracking_norm) && norm(q.awb) !== norm(saved.tracking)) } : c));
         ctxSoon();
       }
-      // Pause only when the packet must be put aside (wrong marketplace, cancelled/return, invalid,
-      // connection error). Duplicates are informational - the packet is already counted, so the phone
-      // keeps scanning and just pops the verdict; otherwise every repeat packet would freeze the line.
-      if (prefs.holdOnError && (scanKind(res) === "stop" || res.code === "NETWORK")) {
-        queue.current = []; // anything scanned after the error must be rescanned
-        setHold(true);
-        break;
-      }
+      // Continuous flow: the scanner never pauses. Every verdict (including wrong marketplace,
+      // cancelled, duplicates) pops the sheet with its sound and the line keeps moving.
     }
     running.current = false;
     setBusy(false);
-  }, [cid, station, feedback, prefs.holdOnError, ctxSoon]);
+  }, [cid, station, feedback, ctxSoon]);
 
   const submitRaw = useCallback(
     (raw: string, fromCamera = false) => {
       unlockAudio();
-      if (holdRef.current) return;
       const v = raw.trim();
       if (!v) return;
       // The camera must never submit QR payloads (URLs / QR text on the label): ignore silently so the
@@ -264,11 +262,6 @@ export default function ScanStation() {
     unlockAudio();
     if (e.key !== "Enter" && e.key !== "Tab") return;
     e.preventDefault();
-    if (holdRef.current) {
-      setHold(false);
-      setValue("");
-      return;
-    }
     const raw = value;
     setValue("");
     submitRaw(raw);
@@ -276,19 +269,10 @@ export default function ScanStation() {
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (holdRef.current) {
-      setHold(false);
-      return;
-    }
     const raw = value;
     setValue("");
     submitRaw(raw);
     inputRef.current?.focus();
-  }
-
-  function resume() {
-    setHold(false);
-    if (!(isPhone() && camOpen)) inputRef.current?.focus();
   }
 
   async function undo(s: Scan) {
@@ -334,13 +318,6 @@ export default function ScanStation() {
     if (!(isPhone() && camOpen)) inputRef.current?.focus();
   }
 
-  // Phone verdict sheet primary action when the scanner is paused: put the packet aside and go on.
-  function resumeNext() {
-    setHold(false);
-    setLast(null);
-    if (!(isPhone() && camOpen)) inputRef.current?.focus();
-  }
-
   function updatePrefs(p: Partial<Prefs>) {
     const n = { ...prefs, ...p };
     setPrefs(n);
@@ -379,11 +356,7 @@ export default function ScanStation() {
     !!last?.res.scan &&
     (isSupervisor(user) || (last.res.scan.user_id === user?.id && Date.now() - new Date(last.res.scan.scanned_at).getTime() < 10 * 60 * 1000));
 
-  const statusPill = hold ? (
-    <span className="inline-flex min-h-9 items-center gap-1.5 rounded-full bg-crit-wash px-3 text-sm font-semibold text-crit-ink">
-      <PauseCircle className="size-4" aria-hidden /> Paused
-    </span>
-  ) : focused || camOpen ? (
+  const statusPill = focused || camOpen ? (
     <span className="inline-flex min-h-9 items-center gap-2 rounded-full bg-accent-wash px-3 text-sm font-semibold text-accent-ink">
       <span className="pulse-dot size-2 rounded-full bg-good" aria-hidden /> {busy ? "Checking OMSGuru..." : "Scanner ready"}
     </span>
@@ -402,7 +375,7 @@ export default function ScanStation() {
       <SyncNotice />
 
       {/* ---- shipment lookup ---- */}
-      <section className={cx("scan-panel", hold && "border-crit")} data-verdict={last ? scanKind(last.res) : undefined} aria-labelledby="lookup-title">
+      <section className="scan-panel" data-verdict={last ? scanKind(last.res) : undefined} aria-labelledby="lookup-title">
         <div className="section-heading">
           <div className="min-w-0">
             <span className="eyebrow">Shipment lookup · {channel?.name ?? "..."}</span>
@@ -414,18 +387,6 @@ export default function ScanStation() {
           <div className="scanner-controls">
             <button type="button" onClick={() => updatePrefs({ sound: !prefs.sound })} aria-pressed={prefs.sound} className={cx("sound-toggle", prefs.sound && "active")}>
               Sound {prefs.sound ? "on" : "off"}
-            </button>
-            <button
-              type="button"
-              onClick={() => updatePrefs({ holdOnError: !prefs.holdOnError })}
-              aria-pressed={prefs.holdOnError}
-              title="Stop the scanner after a rejected scan (wrong marketplace, cancelled, invalid) until someone presses Continue. Duplicates never stop the line."
-              className={cx(
-                "ease-ui hidden min-h-9 cursor-pointer items-center gap-1.5 rounded-full border px-3 text-sm font-semibold sm:inline-flex",
-                prefs.holdOnError ? "border-accent/40 bg-accent-wash text-accent-ink" : "border-line-strong text-muted",
-              )}
-            >
-              <PauseCircle className="size-4" aria-hidden /> Pause on error
             </button>
             {statusPill}
             <span className="hidden md:inline-flex">
@@ -466,7 +427,9 @@ export default function ScanStation() {
         </div>
         {mode === "camera" && camOpen && (
           <div className="md:hidden">
-            <CameraScanner paused={hold || busy} checking={busy} onCode={submitCameraCode} onClose={() => pickMode("manual")} />
+            {/* paused while checking AND while a verdict is on screen: the next scanner only opens
+                once the sheet is gone, so it never covers the result. Auto-dismiss clears it. */}
+            <CameraScanner paused={busy || !!last} checking={busy} onCode={submitCameraCode} onClose={() => pickMode("manual")} />
           </div>
         )}
         {mode === "camera" && !camOpen && (
@@ -496,7 +459,7 @@ export default function ScanStation() {
             onBlur={() => setFocused(false)}
             aria-label="Tracking ID"
             aria-describedby="scan-status"
-            placeholder={hold ? "Paused - press Enter" : "Scan tracking ID and press Enter"}
+            placeholder="Scan tracking ID and press Enter"
           />
           <span>Auto opens on Enter</span>
         </form>
@@ -505,15 +468,6 @@ export default function ScanStation() {
         <div id="scan-status" className="sr-only-live" role="status" aria-live={sev === "error" ? "assertive" : "polite"} aria-atomic="true">
           {last ? `${CODE_TITLE[last.res.code] ?? last.res.code}. ${last.res.message}. ${last.res.scan?.tracking ?? last.raw}` : ""}
         </div>
-
-        {hold && (
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-crit-wash px-3 py-2.5 text-sm text-crit-ink" role="alert">
-            <span>Scanner paused. Put this packet aside, then press Enter or Continue. Anything scanned meanwhile was not saved.</span>
-            <Button variant="danger" onClick={resume}>
-              Continue
-            </Button>
-          </div>
-        )}
 
         {/* quick stats (this marketplace, today) */}
         <div className="quick-stats">
@@ -716,14 +670,14 @@ export default function ScanStation() {
       )}
 
       {/* phones: immediate verdict pop-up over the camera flow - the next scan replaces it,
-          X / backdrop / Escape dismisses it while the inline card below keeps the details */}
+          X / backdrop / Escape dismisses it while the inline card below keeps the details.
+          Continuous flow: the sheet auto-dismisses so nobody has to tap anything. */}
       {last && isPhone() && sheetGone !== last.at && (
         <ResultSheet
           last={last}
           channelName={channel?.name ?? "..."}
-          held={hold}
           canUndo={canUndoLast}
-          onPrimary={() => (hold ? resumeNext() : next())}
+          onPrimary={next}
           onDismiss={() => setSheetGone(last.at)}
           onUndo={() => last.res.scan && void undo(last.res.scan)}
         />

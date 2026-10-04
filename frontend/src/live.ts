@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { API_BASE, getAuthToken } from "./api";
 
 type Handler = (event: string, data: any) => void; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -16,8 +17,19 @@ function setConnected(v: boolean) {
 }
 
 function connect() {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  socket = new WebSocket(`${proto}://${location.host}/ws`);
+  // Installed app: absolute wss:// URL to the API base; browsers: same-origin socket.
+  // The login token travels as ?token= (the server accepts it there); browsers additionally send the cookie.
+  let url: string;
+  if (API_BASE) {
+    const u = new URL(API_BASE);
+    url = `${u.protocol === "https:" ? "wss" : "ws"}://${u.host}/ws`;
+  } else {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    url = `${proto}://${location.host}/ws`;
+  }
+  const token = getAuthToken();
+  if (token) url += `?token=${encodeURIComponent(token)}`;
+  socket = new WebSocket(url);
   socket.onopen = () => {
     retry = 0;
     setConnected(true);

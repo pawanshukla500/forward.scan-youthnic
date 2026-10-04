@@ -1,0 +1,68 @@
+name: Build Android APK
+
+# Installable app for the warehouse phones: bundles the web UI with Capacitor and a
+# native ML Kit barcode scanner. Produces an unsigned debug APK artifact that installs
+# directly on Android (allow "Install unknown apps" once). Run from the Actions tab.
+# Login works with the same username/password; the app signs in by Bearer token and
+# stays signed in on the device (no cookies needed).
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: "Server the app talks to"
+        required: true
+        default: "https://scan.youthnic.shop"
+
+jobs:
+  apk:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Web UI for the App
+        env:
+          VITE_API_URL: ${{ inputs.api_url }}
+        run: npm run build
+
+      - name: Add Android Platform
+        run: |
+          if [ ! -d android ]; then npx cap add android; fi
+          npx cap sync android
+
+      - name: Build Debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: forward-scan-app
+          path: frontend/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

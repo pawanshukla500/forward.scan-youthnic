@@ -1,8 +1,11 @@
-import { AlertTriangle, X } from "lucide-react";
+import { AlertTriangle, ScanLine, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 
-/* Phone-camera barcode reader (rear camera + the browser's BarcodeDetector, i.e. Chrome on Android).
-   It keeps scanning after each read so a packer can move from packet to packet; the same barcode is
+/* Phone-camera barcode reader. Two engines, one contract (onCode per AWB, continuous):
+   - installed Android app: the native ML Kit scanner (no browser needed, works from the APK);
+   - browser: rear camera + the browser's BarcodeDetector (Chrome on Android).
+   Both keep scanning after each read so a packer moves packet to packet; the same barcode is
    ignored while it stays in view so one label is never submitted twice. */
 
 interface Detected {
@@ -50,15 +53,79 @@ export function cameraProblem(): string | null {
 }
 
 export function CameraScanner({ paused, checking, onCode, onClose }: { paused: boolean; checking?: boolean; onCode: (value: string) => void; onClose: () => void }) {
+  const nativeApp = Capacitor.isNativePlatform();
   const video = useRef<HTMLVideoElement>(null);
-  const [error, setError] = useState<string | null>(cameraProblem);
+  const [error, setError] = useState<string | null>(() => (nativeApp ? null : cameraProblem()));
+  const [runId, setRunId] = useState(0); // bump to restart the native scanner after the user backs out of it
+  const [nativeState, setNativeState] = useState<"starting" | "ready" | "scanning">("starting");
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
   const onCodeRef = useRef(onCode);
   onCodeRef.current = onCode;
 
+  /* Installed app: native ML Kit loop. Opens the system scanner, submits the AWB, and opens it
+     again for the next packet - fully continuous, no taps. Backing out of the scanner leaves the
+     launcher so the packer can start again with one tap. */
   useEffect(() => {
-    if (cameraProblem()) return;
+    if (!nativeApp) return;
+    let cancelled = false;
+    let timer = 0;
+    (async () => {
+      try {
+        const { BarcodeScanner, BarcodeFormat } = await import("@capacitor-mlkit/barcode-scanning");
+        if (cancelled) return;
+        const sup = await BarcodeScanner.isSupported().catch(() => ({ supported: false }));
+        if (cancelled) return;
+        if (!sup.supported) {
+          setError("This device cannot scan barcodes. Use Manual entry.");
+          return;
+        }
+        const perm = await BarcodeScanner.checkPermissions().catch(() => null);
+        if (!cancelled && perm?.camera !== "granted") {
+          const req = await BarcodeScanner.requestPermissions().catch(() => null);
+          if (!req || req.camera !== "granted") {
+            setError("Camera permission was blocked. Allow camera access for Forward Scan, then try again.");
+            return;
+          }
+        }
+        if (cancelled) return;
+        setNativeState("ready");
+        const formats = [
+          BarcodeFormat.Code128, BarcodeFormat.Code39, BarcodeFormat.Code93, BarcodeFormat.Codabar,
+          BarcodeFormat.Itf, BarcodeFormat.Ean13, BarcodeFormat.Ean8, BarcodeFormat.UpcA, BarcodeFormat.UpcE,
+        ];
+        const loop = async (): Promise<void> => {
+          if (cancelled) return;
+          if (pausedRef.current) {
+            timer = window.setTimeout(() => void loop(), 400);
+            return;
+          }
+          setNativeState("scanning");
+          try {
+            const { barcodes } = await BarcodeScanner.scan({ formats });
+            if (cancelled) return;
+            const v = (barcodes[0]?.displayValue || barcodes[0]?.rawValue || "").trim();
+            if (v && !looksLikeQr(v)) onCodeRef.current(v);
+            setNativeState("ready");
+            timer = window.setTimeout(() => void loop(), 150); // next packet
+          } catch {
+            // user backed out of the scanner - stay ready for one tap to start again
+            if (!cancelled) setNativeState("ready");
+          }
+        };
+        void loop();
+      } catch {
+        if (!cancelled) setError("Could not start the barcode scanner. Use Manual entry.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [nativeApp, runId]);
+
+  useEffect(() => {
+    if (nativeApp || cameraProblem()) return;
     let stream: MediaStream | null = null;
     let timer = 0;
     let stopped = false;
@@ -128,7 +195,40 @@ export function CameraScanner({ paused, checking, onCode, onClose }: { paused: b
   }, []);
 
   if (error)
+  if (nativeApp && !error)
     return (
+      <div className="relative -mx-4 mt-4 flex h-[300px] flex-col items-center justify-center gap-3 overflow-hidden bg-[#07100c] px-6 text-center text-white sm:-mx-6">
+        <div className="relative grid h-[120px] w-full max-w-[420px] place-items-center rounded-sm border-2 border-white/85 shadow-[0_0_0_999px_rgba(0,0,0,0.32)]">
+          {nativeState === "scanning" && <i className="scanline absolute inset-x-[3%] h-0.5 bg-[#65e4ad] shadow-[0_0_8px_#65e4ad]" />}
+        </div>
+        <span className="text-sm font-medium [text-shadow:0_1px_3px_#000]">
+          {checking
+            ? "Checking OMSGuru… hold the packet steady"
+            : nativeState === "starting"
+              ? "Starting the scanner…"
+              : "Point at the AWB barcode (straight lines, not the square QR)"}
+        </span>
+        {nativeState === "ready" && !checking && (
+          <button
+            type="button"
+            onClick={() => setRunId((n) => n + 1)}
+            className="ease-ui flex min-h-12 cursor-pointer items-center gap-2 rounded-xl bg-accent px-5 text-base font-bold text-on-accent active:opacity-80"
+          >
+            <ScanLine className="size-5" aria-hidden /> Scan packet
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-3 top-3 grid size-10 cursor-pointer place-items-center rounded-full bg-black/60 text-white"
+          aria-label="Close camera"
+        >
+          <X className="size-5" aria-hidden />
+        </button>
+      </div>
+    );
+
+  return (
       <div className="mt-4 flex items-start gap-2.5 rounded-lg bg-warn-wash p-3 text-sm text-warn-ink" role="alert">
         <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
         <span className="flex-1">{error}</span>
@@ -146,10 +246,10 @@ export function CameraScanner({ paused, checking, onCode, onClose }: { paused: b
           {!paused && <i className="scanline absolute inset-x-[3%] h-0.5 bg-[#65e4ad] shadow-[0_0_8px_#65e4ad]" />}
         </div>
         <span className="text-sm font-medium [text-shadow:0_1px_3px_#000]">
-          {paused
-            ? "Paused - put the packet aside, then press Continue"
-            : checking
-              ? "Checking OMSGuru… hold the packet steady"
+          {checking
+            ? "Checking OMSGuru… hold the packet steady"
+            : paused
+              ? "Paused - getting the scanner ready…"
               : "Point the rear camera at the AWB barcode (straight lines, not the square QR)"}
         </span>
       </div>
