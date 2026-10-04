@@ -41,14 +41,18 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Setup SSH Key
+      - name: Configure SSH Key
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+          HOSTINGER_SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST || '200.141.1.119' }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
         run: |
           mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$HOSTINGER_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H -p ${{ secrets.HOSTINGER_SSH_PORT || 22 }} ${{ secrets.HOSTINGER_HOST || '200.141.1.119' }} >> ~/.ssh/known_hosts
+          for i in {1..5}; do
+            ssh-keyscan -p "$HOSTINGER_PORT" "$HOSTINGER_HOST" >> ~/.ssh/known_hosts 2>/dev/null && break || sleep 2
+          done
 
       - name: Package Application and Generate Production .env
         env:
@@ -138,9 +142,9 @@ jobs:
               --exclude='./.env*' \
               -czf /tmp/forward-scan-source.tar.gz .
 
-          ssh -p "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 "${HOSTINGER_USER}@${HOSTINGER_HOST}" "mkdir -p /opt/forward-scan"
-          scp -P "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 /tmp/forward-scan.env "${HOSTINGER_USER}@${HOSTINGER_HOST}:/opt/forward-scan/forward-scan.env"
-          scp -P "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 /tmp/forward-scan-source.tar.gz "${HOSTINGER_USER}@${HOSTINGER_HOST}:/opt/forward-scan/forward-scan-source.tar.gz"
+          ssh -p "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes "${HOSTINGER_USER}@${HOSTINGER_HOST}" "mkdir -p /opt/forward-scan"
+          scp -P "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes /tmp/forward-scan.env "${HOSTINGER_USER}@${HOSTINGER_HOST}:/opt/forward-scan/forward-scan.env"
+          scp -P "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes /tmp/forward-scan-source.tar.gz "${HOSTINGER_USER}@${HOSTINGER_HOST}:/opt/forward-scan/forward-scan-source.tar.gz"
 
       - name: Execute Remote Hostinger VPS Deployment
         env:
@@ -150,7 +154,7 @@ jobs:
           APP_DOMAIN: ${{ vars.APP_DOMAIN || 'scan.youthnic.shop' }}
           FALLBACK_DOMAIN: ${{ vars.FALLBACK_DOMAIN || 'scan.srv1845788.hstgr.cloud' }}
         run: |
-          ssh -p "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 "${HOSTINGER_USER}@${HOSTINGER_HOST}" 'bash -s' <<'EOF'
+          ssh -p "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes "${HOSTINGER_USER}@${HOSTINGER_HOST}" 'bash -s' <<'EOF'
           set -euo pipefail
 
           echo ">>> [1/7] Preparing directory structure in /opt/forward-scan/Forward-Scan..."
