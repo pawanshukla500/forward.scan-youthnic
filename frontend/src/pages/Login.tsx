@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { api, setAuthToken, type User } from "../api";
+import { api, API_BASE, setAuthToken, type User } from "../api";
 import { useAuth } from "../App";
 import { Icon, useResolvedDark } from "../components/icons";
 import { cx } from "../components/ui";
@@ -41,7 +41,13 @@ export default function Login() {
       setUser(r.user);
       nav("/scan", { replace: true });
     } catch (e) {
-      setErr((e as Error).message);
+      const msg = (e as Error).message || "";
+      // the request never reached the server (phone offline, or server unreachable from the app)
+      setErr(
+        /failed to fetch|networkerror|load failed/i.test(msg)
+          ? `Cannot reach the server${API_BASE ? ` (${API_BASE})` : ""}. Check this device's internet connection and try again.`
+          : msg,
+      );
     } finally {
       setBusy(false);
     }

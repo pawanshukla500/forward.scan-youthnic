@@ -63,7 +63,11 @@ jobs:
       - name: Build Web UI for the App
         env:
           VITE_API_URL: ${{ inputs.api_url }}
-        run: npm run build
+        run: |
+          npm run build
+          # fail fast if the server URL did not make it into the bundle - without it
+          # the app shows "Failed to fetch" on login and nothing works
+          grep -o "${{ inputs.api_url }}" dist/assets/*.js | head -1
 
       - name: Add Android Platform
         run: |
