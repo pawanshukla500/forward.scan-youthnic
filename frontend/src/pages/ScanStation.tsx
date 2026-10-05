@@ -7,6 +7,8 @@ import {
   Minimize2,
   ScanLine,
   Undo2,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -357,16 +359,28 @@ export default function ScanStation() {
     (isSupervisor(user) || (last.res.scan.user_id === user?.id && Date.now() - new Date(last.res.scan.scanned_at).getTime() < 10 * 60 * 1000));
 
   const statusPill = focused || camOpen ? (
-    <span className="inline-flex min-h-9 items-center gap-2 rounded-full bg-accent-wash px-3 text-sm font-semibold text-accent-ink">
-      <span className="pulse-dot size-2 rounded-full bg-good" aria-hidden /> {busy ? "Checking OMSGuru..." : "Scanner ready"}
+    <span className="inline-flex min-h-9 items-center gap-2 whitespace-nowrap rounded-full bg-accent-wash px-3 text-sm font-semibold text-accent-ink">
+      <span className="pulse-dot size-2 rounded-full bg-good" aria-hidden />
+      {busy ? (
+        <>
+          <span className="sm:hidden">Checking...</span>
+          <span className="hidden sm:inline">Checking OMSGuru...</span>
+        </>
+      ) : (
+        <>
+          <span className="sm:hidden">Ready</span>
+          <span className="hidden sm:inline">Scanner ready</span>
+        </>
+      )}
     </span>
   ) : (
     <button
       type="button"
       onClick={() => inputRef.current?.focus()}
-      className="inline-flex min-h-9 cursor-pointer items-center gap-1.5 rounded-full bg-warn-wash px-3 text-sm font-semibold text-warn-ink"
+      className="inline-flex min-h-9 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full bg-warn-wash px-3 text-sm font-semibold text-warn-ink"
     >
-      <AlertTriangle className="size-4" aria-hidden /> Not listening - tap to reconnect
+      <AlertTriangle className="size-4" aria-hidden /> <span className="sm:hidden">Tap to scan</span>
+      <span className="hidden sm:inline">Not listening - tap to reconnect</span>
     </button>
   );
 
@@ -374,160 +388,144 @@ export default function ScanStation() {
     <div className="scan-layout">
       <SyncNotice />
 
-      {/* ---- shipment lookup ---- */}
+      {/* ---- shipment lookup: marketplace + scanner state, the scan box, today's numbers - one compact panel ---- */}
       <section className="scan-panel" data-verdict={last ? scanKind(last.res) : undefined} aria-labelledby="lookup-title">
-        <div className="section-heading">
-          <div className="min-w-0">
-            <span className="eyebrow">Shipment lookup · {channel?.name ?? "..."}</span>
-            <h2 id="lookup-title" className="mt-1 text-[22px] font-bold tracking-tight">
-              Scan tracking ID
-            </h2>
-            <p className="mt-0.5 hidden text-[15px] text-muted sm:block">Use a barcode scanner or enter the tracking ID manually. Every scan is checked live with OMSGuru.</p>
+        <h2 id="lookup-title" className="sr-only">
+          Scan tracking ID - {channel?.name ?? ""}
+        </h2>
+        {/* wide screens: marketplace | scan box | scanner state on one row; narrower: toolbar above the box */}
+        <div className="scan-head">
+          <div className="scan-toolbar">
+            <label className="strip-select">
+              <i aria-hidden style={{ background: channel?.color || "var(--muted)" }} />
+              <select value={cid} onChange={(e) => nav(`/scan/${e.target.value}`)} aria-label="Marketplace">
+                {channels.length === 0 && channel && <option value={channel.id}>{channel.name}</option>}
+                {channels.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="scan-hint">Scanner or keyboard · every scan is checked live with OMSGuru</p>
+            <div className="scanner-controls">
+              <button type="button" onClick={() => updatePrefs({ sound: !prefs.sound })} aria-pressed={prefs.sound} className={cx("sound-toggle", prefs.sound && "active")}>
+                {prefs.sound ? <Volume2 className="size-4" aria-hidden /> : <VolumeX className="size-4" aria-hidden />}
+                Sound {prefs.sound ? "on" : "off"}
+              </button>
+              {statusPill}
+              <span className="hidden md:inline-flex">
+                <IconButton label={full ? "Exit full screen" : "Full screen"} onClick={toggleFull}>
+                  {full ? <Minimize2 className="size-4" aria-hidden /> : <Maximize2 className="size-4" aria-hidden />}
+                </IconButton>
+              </span>
+            </div>
           </div>
-          <div className="scanner-controls">
-            <button type="button" onClick={() => updatePrefs({ sound: !prefs.sound })} aria-pressed={prefs.sound} className={cx("sound-toggle", prefs.sound && "active")}>
-              Sound {prefs.sound ? "on" : "off"}
-            </button>
-            {statusPill}
-            <span className="hidden md:inline-flex">
-              <IconButton label={full ? "Exit full screen" : "Full screen"} onClick={toggleFull}>
-                {full ? <Minimize2 className="size-4" aria-hidden /> : <Maximize2 className="size-4" aria-hidden />}
-              </IconButton>
+
+          {/* phones: progress strip + Camera / Manual */}
+          <div className="-mx-4 mt-3 grid grid-cols-[auto_auto_1fr] items-center gap-2 border-y border-line px-4 py-2.5 text-sm text-muted md:hidden">
+            <span>Scanned</span>
+            <b className="tnum text-ink">
+              {awb ? `${awb.scanned} / ${base}` : "-"}
+            </b>
+            <span className="h-1.5 overflow-hidden rounded-full bg-line" aria-hidden>
+              <span className="block h-full rounded-full bg-accent" style={{ width: `${pct ?? 0}%` }} />
             </span>
           </div>
-        </div>
-
-        {/* phones: progress strip + Camera / Manual */}
-        <div className="-mx-4 mt-4 grid grid-cols-[auto_auto_1fr] items-center gap-2 border-y border-line px-4 py-2.5 text-sm text-muted md:hidden">
-          <span>Scanned</span>
-          <b className="tnum text-ink">
-            {awb ? `${awb.scanned} / ${base}` : "-"}
-          </b>
-          <span className="h-1.5 overflow-hidden rounded-full bg-line" aria-hidden>
-            <span className="block h-full rounded-full bg-accent" style={{ width: `${pct ?? 0}%` }} />
-          </span>
-        </div>
-        <div className="-mx-4 grid grid-cols-2 border-b border-line md:hidden" role="tablist" aria-label="Scan method">
-          {(["camera", "manual"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              role="tab"
-              aria-selected={mode === m}
-              onClick={() => pickMode(m)}
-              className={cx(
-                "flex h-12 cursor-pointer items-center justify-center gap-2 border-b-2 text-sm font-semibold",
-                mode === m ? "border-accent text-accent-ink" : "border-transparent text-muted",
-              )}
-            >
-              {m === "camera" ? <Camera className="size-[18px]" aria-hidden /> : <Keyboard className="size-[18px]" aria-hidden />}
-              {m === "camera" ? "Camera" : "Manual"}
-            </button>
-          ))}
-        </div>
-        {mode === "camera" && camOpen && (
-          <div className="md:hidden">
-            {/* paused while checking AND while a verdict is on screen: the next scanner only opens
-                once the sheet is gone, so it never covers the result. Auto-dismiss clears it. */}
-            <CameraScanner paused={busy || !!last} checking={busy} onCode={submitCameraCode} onClose={() => pickMode("manual")} />
+          <div className="-mx-4 grid grid-cols-2 border-b border-line md:hidden" role="tablist" aria-label="Scan method">
+            {(["camera", "manual"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                role="tab"
+                aria-selected={mode === m}
+                onClick={() => pickMode(m)}
+                className={cx(
+                  "flex h-12 cursor-pointer items-center justify-center gap-2 border-b-2 text-sm font-semibold",
+                  mode === m ? "border-accent text-accent-ink" : "border-transparent text-muted",
+                )}
+              >
+                {m === "camera" ? <Camera className="size-[18px]" aria-hidden /> : <Keyboard className="size-[18px]" aria-hidden />}
+                {m === "camera" ? "Camera" : "Manual"}
+              </button>
+            ))}
           </div>
-        )}
-        {mode === "camera" && !camOpen && (
-          <button
-            type="button"
-            onClick={() => setCamOpen(true)}
-            className="mt-4 flex h-12 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-accent/40 bg-accent-wash text-sm font-bold text-accent-ink md:hidden"
-          >
-            <Camera className="size-[18px]" aria-hidden /> Open rear camera
-          </button>
-        )}
+          {mode === "camera" && camOpen && (
+            <div className="md:hidden">
+              {/* paused while checking AND while a verdict is on screen: the next scanner only opens
+                  once the sheet is gone, so it never covers the result. Auto-dismiss clears it. */}
+              <CameraScanner paused={busy || !!last} checking={busy} onCode={submitCameraCode} onClose={() => pickMode("manual")} />
+            </div>
+          )}
+          {mode === "camera" && !camOpen && (
+            <button
+              type="button"
+              onClick={() => setCamOpen(true)}
+              className="mt-4 flex h-12 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-accent/40 bg-accent-wash text-sm font-bold text-accent-ink md:hidden"
+            >
+              <Camera className="size-[18px]" aria-hidden /> Open rear camera
+            </button>
+          )}
 
-        <form onSubmit={onSubmit} className={cx("scan-form", mode === "camera" && camOpen && "camera-mode")}>
-          <ScanLine className="size-6 shrink-0" aria-hidden />
-          <input
-            id="scanbox"
-            ref={inputRef}
-            autoFocus={!isPhone()}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="characters"
-            spellCheck={false}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={onKeyDown}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            aria-label="Tracking ID"
-            aria-describedby="scan-status"
-            placeholder="Scan tracking ID and press Enter"
-          />
-          <span>Auto opens on Enter</span>
-        </form>
+          <form onSubmit={onSubmit} className={cx("scan-form", mode === "camera" && camOpen && "camera-mode")}>
+            <ScanLine className="size-6 shrink-0" aria-hidden />
+            <input
+              id="scanbox"
+              ref={inputRef}
+              autoFocus={!isPhone()}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={onKeyDown}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+              aria-label="Tracking ID"
+              aria-describedby="scan-status"
+              placeholder="Scan tracking ID and press Enter"
+            />
+            <span>Auto opens on Enter</span>
+          </form>
+        </div>
 
         {/* one atomic announcement per scan for screen readers */}
         <div id="scan-status" className="sr-only-live" role="status" aria-live={sev === "error" ? "assertive" : "polite"} aria-atomic="true">
           {last ? `${CODE_TITLE[last.res.code] ?? last.res.code}. ${last.res.message}. ${last.res.scan?.tracking ?? last.raw}` : ""}
         </div>
 
-        {/* quick stats (this marketplace, today) */}
-        <div className="quick-stats">
-          <div>
-            <span>Today's scans</span>
-            <b>{st ? st.scanned.toLocaleString("en-IN") : "—"}</b>
-            <small className="positive">{st ? `${mineToday.toLocaleString("en-IN")} by you` : ""}</small>
+        {/* today in this marketplace: scans, then AWB progress - one slim row on wide screens */}
+        <div className="scan-metrics" aria-label="Today in this marketplace">
+          <Metric label="Today's scans" value={st?.scanned} sub={st ? `${mineToday.toLocaleString("en-IN")} by you` : ""} subClass="positive" />
+          <Metric label="Successful" value={st?.ok} sub={okPct === null || okPct === undefined ? "" : `${okPct}%`} />
+          <Metric
+            label="Flagged"
+            value={st?.flagged}
+            sub={st ? (st.flagged ? "Needs review" : "All clear") : ""}
+            subClass={st?.flagged ? "warning-text" : undefined}
+          />
+          <div className="metric-progress">
+            {!awb ? (
+              <Skeleton className="h-9 w-full" />
+            ) : (
+              <>
+                <span>
+                  <b>{awb.scanned.toLocaleString("en-IN")}</b> of {awb.generated.toLocaleString("en-IN")} AWBs scanned today
+                  {pct !== null && <em>{pct}%</em>}
+                </span>
+                <div role="progressbar" aria-valuenow={pct ?? 0} aria-valuemin={0} aria-valuemax={100} aria-label="Today's AWBs scanned">
+                  <i style={{ width: `${Math.min(100, pct ?? 0)}%` }} />
+                </div>
+              </>
+            )}
           </div>
-          <div>
-            <span>Successful</span>
-            <b>{st ? st.ok.toLocaleString("en-IN") : "—"}</b>
-            <small>{okPct === null || okPct === undefined ? "" : `${okPct}%`}</small>
-          </div>
-          <div>
-            <span>Flagged</span>
-            <b>{st ? st.flagged.toLocaleString("en-IN") : "—"}</b>
-            <small className="warning-text">{st?.flagged ? "Needs review" : "All clear"}</small>
-          </div>
+          <Metric label="Pending" value={awb?.pending} className="pending" />
+          <Metric label="Overdue" value={awb?.overdue} className={awb && awb.overdue > 0 ? "overdue" : undefined} />
+          <button type="button" className="secondary metric-download" onClick={() => void exportPending("pending")} title="Download pending AWBs (Excel)">
+            <Download className="size-4" aria-hidden /> Download
+          </button>
         </div>
-      </section>
-
-      {/* ---- marketplace progress ---- */}
-      <section className="card scan-marketplaces progress-strip" aria-label="Today's progress for this marketplace">
-        <label className="strip-select">
-          <i aria-hidden style={{ background: channel?.color || "var(--muted)" }} />
-          <select value={cid} onChange={(e) => nav(`/scan/${e.target.value}`)} aria-label="Marketplace">
-            {channels.length === 0 && channel && <option value={channel.id}>{channel.name}</option>}
-            {channels.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        {!ctx ? (
-          <Skeleton className="h-8 flex-1" />
-        ) : (
-          <>
-            <div className="strip-progress">
-              <span>
-                <b>{awb!.scanned.toLocaleString("en-IN")}</b> of {awb!.generated.toLocaleString("en-IN")} scanned today
-                {pct !== null && <em>{pct}%</em>}
-              </span>
-              <div role="progressbar" aria-valuenow={pct ?? 0} aria-valuemin={0} aria-valuemax={100} aria-label="Today's AWBs scanned">
-                <i style={{ width: `${Math.min(100, pct ?? 0)}%` }} />
-              </div>
-            </div>
-            <div className="strip-stat pending">
-              <span>Pending</span>
-              <b>{awb!.pending.toLocaleString("en-IN")}</b>
-            </div>
-            <div className={cx("strip-stat", awb!.overdue > 0 && "overdue")}>
-              <span>Overdue</span>
-              <b>{awb!.overdue.toLocaleString("en-IN")}</b>
-            </div>
-          </>
-        )}
-        <button type="button" className="secondary strip-download" onClick={() => void exportPending("pending")} title="Download pending AWBs (Excel)">
-          <Download className="size-4" aria-hidden /> Download
-        </button>
       </section>
 
       {/* ---- the scanned shipment ---- */}
@@ -547,15 +545,17 @@ export default function ScanStation() {
           <JourneyCard res={last.res} ctx={ctx} now={now} />
         </div>
       ) : (
-        <section className="card scan-empty grid place-items-center px-6 py-8 text-center">
-          <span className="grid size-14 place-items-center rounded-2xl bg-accent-wash text-accent-ink">
-            <ScanLine className="size-7" aria-hidden />
+        <section className="card scan-empty">
+          <span className="scan-empty-icon">
+            <ScanLine className="size-6" aria-hidden />
           </span>
-          <p className="mt-4 text-lg font-bold">{st?.scanned ? "Ready for the next shipment" : "Scan the first packet"}</p>
-          <p className="mt-1 max-w-md text-[15px] text-ink-2">
-            Scan the AWB barcode on the shipping label. Order details, items and SLA appear here; duplicates, wrong marketplace and cancelled orders
-            are stopped.
-          </p>
+          <div className="min-w-0">
+            <p className="text-base font-bold">{st?.scanned ? "Ready for the next shipment" : "Scan the first packet"}</p>
+            <p className="mt-0.5 text-sm text-ink-2">
+              Scan the AWB barcode on the shipping label. Order details and items appear here; duplicates, wrong marketplace and cancelled orders are
+              stopped.
+            </p>
+          </div>
           <ul className="sound-legend" aria-label="What each colour and sound means - tap to hear it">
             {LEGEND.map((k) => (
               <li key={k}>
@@ -682,6 +682,17 @@ export default function ScanStation() {
           onUndo={() => last.res.scan && void undo(last.res.scan)}
         />
       )}
+    </div>
+  );
+}
+
+/** One number in the scan panel's metrics row: small label above, value with an optional note beside it. */
+function Metric({ label, value, sub, subClass, className }: { label: string; value: number | undefined; sub?: string; subClass?: string; className?: string }) {
+  return (
+    <div className={cx("metric-cell", className)}>
+      <span>{label}</span>
+      <b>{value === undefined ? "—" : value.toLocaleString("en-IN")}</b>
+      {sub && <small className={subClass}>{sub}</small>}
     </div>
   );
 }

@@ -25,7 +25,7 @@ function Notice({ tone, icon, title, children }: { tone: "crit" | "warn" | "info
   return (
     <div
       className={cx(
-        "sync-notice flex items-start gap-2.5 rounded-lg px-3 py-2 text-sm md:gap-3 md:px-4 md:py-3",
+        "sync-notice flex items-start gap-2.5 rounded-lg px-3 py-2 text-sm md:gap-3 md:px-4 md:py-2",
         tone === "crit" ? "bg-crit-wash text-crit-ink" : tone === "warn" ? "bg-warn-wash text-warn-ink" : "bg-info-wash text-ink-2",
       )}
       role={tone === "crit" ? "alert" : "status"}
