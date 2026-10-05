@@ -62,9 +62,9 @@ def evaluate(orders: list[OmsOrder], selected_channel_id: int, channels: dict[in
     if "NOT_PACKED" in groups:
         flags.append("NOT_RTS")
         notes.append("OMS still shows this order as New/Pending (not packed)")
-    if "SHIPPED" in groups:
-        flags.append("ALREADY_SHIPPED_IN_OMS")
-        notes.append("OMS already shows this order as shipped")
+    # Shipped / In Transit in OMS is normal, not a check: marketplaces such as Meesho (Valmo) mark the
+    # order In Transit as soon as the label is made, and every scanned packet reaches it after pickup -
+    # flagging it made good scans amber and counted them as "needs review" (user, 5 Oct 2026).
     if "MOVED" in groups:
         flags.append("STATUS_CHANGED")
         notes.append("Order is no longer Ready-to-ship in OMS - verify status")
@@ -451,6 +451,29 @@ def _linked_response(db: Session, existing: Scan, user: User, station: str, chan
            outcome="ACCEPTED" if severity != "error" else "BLOCKED", message=msg, scan_id=existing.id)
     db.commit()
     return {"severity": severity, "code": code, "message": msg, "scan": payload, "order": payload["order"], "live": "fresh"}
+
+
+RETIRED_FLAG = "ALREADY_SHIPPED_IN_OMS"
+_RETIRED_NOTE = "OMS already shows this order as shipped"
+
+
+def clear_shipped_checks(db: Session) -> int:
+    """Scans saved while "already shipped in OMS" was still a Check: drop that flag; a scan with no other
+    reason left is OK. Idempotent - runs at every start, finds nothing once done."""
+    fixed = 0
+    for scan in db.scalars(select(Scan).where(Scan.result == "WARN", Scan.flags.like(f"%{RETIRED_FLAG}%"))):
+        flags = [f for f in (scan.flags or "").split(",") if f and f != RETIRED_FLAG]
+        notes = [n for n in (scan.message or "").split("; ") if n and n != _RETIRED_NOTE]
+        scan.flags = ",".join(flags)
+        if flags:
+            scan.message = "; ".join(notes)[:300]
+        else:
+            scan.result, scan.message = "OK", "Verified"
+        fixed += 1
+    if fixed:
+        db.commit()
+        cache.clear()
+    return fixed
 
 
 def reverify_scans(db: Session, tracking_norms: set[str]) -> list[dict[str, Any]]:
