@@ -14,10 +14,11 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type Keyboard
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, download, qs, type Channel, type QueueRow, type Scan, type ScanContext, type ScanResponse } from "../api";
 import { isSupervisor, useAuth } from "../App";
-import { CameraScanner, cameraProblem, looksLikeQr } from "../components/CameraScanner";
+import { cameraProblem, looksLikeQr } from "../components/CameraScanner";
+import { PhoneScanMode } from "../components/PhoneScanMode";
 import { CODE_TITLE, fmtMins, JourneyCard, KIND_META, scanKind, ShipmentCard, type ScanKind } from "../components/ShipmentCard";
 import { ResultSheet } from "../components/ResultSheet";
-import { SyncNotice } from "../components/SyncNotice";
+import { SyncBanner, SyncChip, useSyncState } from "../components/SyncNotice";
 import { Button, cx, Empty, IconButton, ResultPill, Skeleton, Toast } from "../components/ui";
 import { useLive, useThrottled } from "../live";
 import { playCue, unlockAudio } from "../sound";
@@ -52,8 +53,45 @@ function read(key: string): string {
 
 const LEGEND: ScanKind[] = ["ok", "duplicate", "notfound", "check", "stop"];
 
-const isPhone = () => window.matchMedia("(max-width: 767px)").matches;
+const PHONE_QUERY = "(max-width: 767px)";
+const isPhone = () => window.matchMedia(PHONE_QUERY).matches;
 const norm = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/** Phone-sized screen, kept current when the phone rotates or the window is resized. */
+function usePhone(): boolean {
+  const [phone, setPhone] = useState(isPhone);
+  useEffect(() => {
+    const mq = window.matchMedia(PHONE_QUERY);
+    const on = () => setPhone(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return phone;
+}
+
+/** What each verdict colour and sound means - tap one to hear it. */
+function SoundLegend() {
+  return (
+    <ul className="sound-legend" aria-label="What each colour and sound means - tap to hear it">
+      {LEGEND.map((k) => (
+        <li key={k}>
+          <button
+            type="button"
+            onClick={() => {
+              unlockAudio();
+              playCue(k, 0.7);
+            }}
+            title="Tap to hear this sound"
+          >
+            <i className={`verdict-${k}`} aria-hidden />
+            <b>{KIND_META[k].title}</b>
+            <span>{KIND_META[k].sound}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 interface Last {
   res: ScanResponse;
@@ -93,6 +131,10 @@ export default function ScanStation() {
   const lastSubmit = useRef<{ norm: string; at: number }>({ norm: "", at: 0 });
   const camRef = useRef(false);
   camRef.current = camOpen;
+  const phone = usePhone();
+  // phones scanning with the camera get the dedicated screen: camera on top, result below, nothing pops up
+  const camScreen = phone && mode === "camera" && camOpen;
+  const sync = useSyncState();
 
   useEffect(() => store("fs_last_channel", String(cid)), [cid]);
   useEffect(() => {
@@ -154,12 +196,13 @@ export default function ScanStation() {
   // Continuous flow on phones: the verdict sheet dismisses itself (OK fastest, stop verdicts linger),
   // so the packer never has to tap Next/Continue. Dismissing the sheet by hand cancels the timer,
   // leaving the inline card below readable; the next scan starts a fresh timer.
+  // The camera screen keeps the result in its bottom half until the next scan replaces it.
   useEffect(() => {
-    if (!last || !isPhone() || sheetGone === last.at) return;
+    if (!last || !phone || camScreen || sheetGone === last.at) return;
     const ms = { ok: 1500, duplicate: 2200, notfound: 2500, check: 3000, stop: 4500 }[scanKind(last.res)] ?? 2500;
     const t = window.setTimeout(() => setLast(null), ms);
     return () => window.clearTimeout(t);
-  }, [last, sheetGone]);
+  }, [last, sheetGone, phone, camScreen]);
 
   // One sound per kind of result (no voice): OK, duplicate, not found, check, stop.
   const feedback = useCallback(
@@ -327,6 +370,8 @@ export default function ScanStation() {
   }
 
   function pickMode(m: "camera" | "manual") {
+    // leaving the camera screen: its result was already on screen - do not pop it up again as a sheet
+    if (m === "manual" && last) setSheetGone(last.at);
     setMode(m);
     store("fs_scan_mode", m);
     setCamOpen(m === "camera");
@@ -358,6 +403,12 @@ export default function ScanStation() {
     !!last?.res.scan &&
     (isSupervisor(user) || (last.res.scan.user_id === user?.id && Date.now() - new Date(last.res.scan.scanned_at).getTime() < 10 * 60 * 1000));
 
+  const toastEl = toast && (
+    <Toast kind={toast.kind} onClose={() => setToast(null)}>
+      {toast.text}
+    </Toast>
+  );
+
   const statusPill = focused || camOpen ? (
     <span className="inline-flex min-h-9 items-center gap-2 whitespace-nowrap rounded-full bg-accent-wash px-3 text-sm font-semibold text-accent-ink">
       <span className="pulse-dot size-2 rounded-full bg-good" aria-hidden />
@@ -386,7 +437,8 @@ export default function ScanStation() {
 
   return (
     <div className="scan-layout">
-      <SyncNotice />
+      {/* only "scans are not being saved" problems get a banner here; "OMSGuru busy" & co. are a chip in the toolbar */}
+      {sync?.tone === "crit" && <SyncBanner state={sync} />}
 
       {/* ---- shipment lookup: marketplace + scanner state, the scan box, today's numbers - one compact panel ---- */}
       <section className="scan-panel" data-verdict={last ? scanKind(last.res) : undefined} aria-labelledby="lookup-title">
@@ -413,6 +465,7 @@ export default function ScanStation() {
                 {prefs.sound ? <Volume2 className="size-4" aria-hidden /> : <VolumeX className="size-4" aria-hidden />}
                 Sound {prefs.sound ? "on" : "off"}
               </button>
+              {sync && sync.tone !== "crit" && <SyncChip state={sync} />}
               {statusPill}
               <span className="hidden md:inline-flex">
                 <IconButton label={full ? "Exit full screen" : "Full screen"} onClick={toggleFull}>
@@ -450,13 +503,6 @@ export default function ScanStation() {
               </button>
             ))}
           </div>
-          {mode === "camera" && camOpen && (
-            <div className="md:hidden">
-              {/* paused while checking AND while a verdict is on screen: the next scanner only opens
-                  once the sheet is gone, so it never covers the result. Auto-dismiss clears it. */}
-              <CameraScanner paused={busy || !!last} checking={busy} onCode={submitCameraCode} onClose={() => pickMode("manual")} />
-            </div>
-          )}
           {mode === "camera" && !camOpen && (
             <button
               type="button"
@@ -556,17 +602,7 @@ export default function ScanStation() {
               stopped.
             </p>
           </div>
-          <ul className="sound-legend" aria-label="What each colour and sound means - tap to hear it">
-            {LEGEND.map((k) => (
-              <li key={k}>
-                <button type="button" onClick={() => { unlockAudio(); playCue(k, 0.7); }} title="Tap to hear this sound">
-                  <i className={`verdict-${k}`} aria-hidden />
-                  <b>{KIND_META[k].title}</b>
-                  <span>{KIND_META[k].sound}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <SoundLegend />
         </section>
       )}
 
@@ -663,16 +699,63 @@ export default function ScanStation() {
         </Link>
       </div>
 
-      {toast && (
-        <Toast kind={toast.kind} onClose={() => setToast(null)}>
-          {toast.text}
-        </Toast>
+      {toast && !camScreen && toastEl}
+
+      {/* phones with the camera: camera stays open in the top half, the result fills the bottom half */}
+      {camScreen && (
+        <PhoneScanMode
+          channelName={channel?.name ?? "..."}
+          channelColor={channel?.color}
+          progress={awb ? { scanned: awb.scanned, total: base, pct: pct ?? 0 } : null}
+          notice={sync?.tone === "crit" ? <SyncBanner state={sync} /> : undefined}
+          busy={busy}
+          onCode={submitCameraCode}
+          onManual={() => pickMode("manual")}
+          footer={toast ? toastEl : undefined}
+        >
+          {last ? (
+            <ShipmentCard
+              res={last.res}
+              raw={last.raw}
+              at={last.at}
+              canUndo={canUndoLast}
+              flagging={flagging}
+              onFlag={(r) => void flag(r)}
+              onUndo={() => last.res.scan && void undo(last.res.scan)}
+              now={now}
+            />
+          ) : (
+            <div className="scan-mode-idle">
+              <p className="text-base font-bold">{st?.scanned ? "Ready for the next packet" : "Scan the first packet"}</p>
+              <p className="mt-0.5 text-sm text-ink-2">Hold the AWB barcode inside the frame - it scans by itself and the result shows here.</p>
+              <dl className="scan-mode-stats">
+                <div>
+                  <dt>Today</dt>
+                  <dd>{st ? st.scanned.toLocaleString("en-IN") : "—"}</dd>
+                </div>
+                <div>
+                  <dt>By you</dt>
+                  <dd className="positive">{mineToday.toLocaleString("en-IN")}</dd>
+                </div>
+                <div>
+                  <dt>Pending</dt>
+                  <dd className="warning-text">{awb ? awb.pending.toLocaleString("en-IN") : "—"}</dd>
+                </div>
+                <div>
+                  <dt>Overdue</dt>
+                  <dd className={awb && awb.overdue > 0 ? "text-crit-ink" : undefined}>{awb ? awb.overdue.toLocaleString("en-IN") : "—"}</dd>
+                </div>
+              </dl>
+              <SoundLegend />
+            </div>
+          )}
+        </PhoneScanMode>
       )}
 
-      {/* phones: immediate verdict pop-up over the camera flow - the next scan replaces it,
+      {/* phones typing / with a Bluetooth scanner: immediate verdict pop-up - the next scan replaces it,
           X / backdrop / Escape dismisses it while the inline card below keeps the details.
           Continuous flow: the sheet auto-dismisses so nobody has to tap anything. */}
-      {last && isPhone() && sheetGone !== last.at && (
+      {last && phone && !camScreen && sheetGone !== last.at && (
         <ResultSheet
           last={last}
           channelName={channel?.name ?? "..."}

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand colours instead of Capacitor's default indigo (status bar, system accents). -->
+    <color name="colorPrimary">#126B4E</color>
+    <color name="colorPrimaryDark">#0D553D</color>
+    <color name="colorAccent">#126B4E</color>
+</resources>

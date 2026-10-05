@@ -174,6 +174,19 @@ First live start: channels and warehouses load from OMSGuru automatically. Then 
 2. *Warehouses* - make sure your dispatch warehouse is listed with Sync on.
 3. *Team members* (Admin overview) - create a login per packer (role Scan operator) and for leads (Supervisor).
 
+## Android app (APK)
+
+Actions -> **Build Android APK** -> Run workflow builds the app against `https://scan.youthnic.shop` and publishes
+`forward-scan-app.apk` on the `forward-scan-app` release (untick *publish* for a build-only check). On the phone the
+camera stays open in the top half of the scan screen and every result appears below it; the version (`1.0.<run>`) is
+shown in Android's App info.
+
+Every build is signed with one fixed key from the `ANDROID_DEBUG_KEYSTORE_B64` repository secret, so a new APK installs
+over the old one and the phone stays signed in. The key file is backed up (not in git) at
+`backups/android-signing/forward-scan-debug.keystore` (alias `androiddebugkey`, password `android`); if the secret is ever
+lost, restore it with `base64 -w0 <that file> | gh secret set ANDROID_DEBUG_KEYSTORE_B64`. A build with a different key
+cannot update installed apps - phones would have to uninstall first.
+
 ## Daily flow
 
 1. Packer signs in -> **Scan** -> picks the marketplace bag (e.g. *VB EXPORT - Myntra PPMP*) -> scans.

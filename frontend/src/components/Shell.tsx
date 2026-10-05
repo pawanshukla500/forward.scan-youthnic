@@ -1,4 +1,4 @@
-import { AlertOctagon, KeyRound, Timer, X } from "lucide-react";
+import { AlertOctagon, ChevronsLeft, ChevronsRight, CircleHelp, KeyRound, Timer, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { api, qs } from "../api";
@@ -55,7 +55,7 @@ export function Brand() {
   return (
     <div className="brand">
       <BrandMark />
-      <span>
+      <span className="brand-text">
         Forward<span>Scan</span>
       </span>
     </div>
@@ -87,7 +87,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   const item = (n: { to: string; label: string; icon: string; kbd?: string }) => {
     const on = n.to === "/scan" ? loc.pathname.startsWith("/scan") : loc.pathname === n.to || loc.pathname.startsWith(n.to + "/");
     return (
-      <NavLink key={n.to} to={n.to} onClick={onNavigate} className={cx("nav-item", on && "active")} aria-current={on ? "page" : undefined}>
+      <NavLink key={n.to} to={n.to} onClick={onNavigate} className={cx("nav-item", on && "active")} aria-current={on ? "page" : undefined} title={n.label}>
         <Icon name={n.icon} size={19} />
         <span>{n.label}</span>
         {n.kbd && <kbd>{n.kbd}</kbd>}
@@ -132,8 +132,10 @@ function UserRow() {
   }, [changed]);
   return (
     <div className="user-row">
-      <div className="avatar">{initials(name)}</div>
-      <div className="min-w-0">
+      <div className="avatar" title={name}>
+        {initials(name)}
+      </div>
+      <div className="user-text min-w-0">
         <b>{name}</b>
         <span>{changed ? "Password changed" : role}</span>
       </div>
@@ -158,6 +160,10 @@ function SidebarBody({ onNavigate, onHelp }: { onNavigate?: () => void; onHelp: 
       </div>
       <div className="sidebar-bottom">
         <HelpCard onOpen={onHelp} />
+        {/* collapsed rail: the help card shrinks to this button */}
+        <button type="button" className="help-mini" onClick={onHelp} aria-label="Scanner guide" title="Scanner guide">
+          <CircleHelp className="size-5" aria-hidden />
+        </button>
         <UserRow />
       </div>
     </>
@@ -312,7 +318,8 @@ function HelpModal({ onClose }: { onClose: () => void }) {
   }, [onClose]);
   const rows: [string, ReactNode][] = [
     ["USB / Bluetooth scanner", "Works like a keyboard. Set it to send Enter after each barcode, then click the scan box once - the green \"Scanner ready\" badge confirms it is listening."],
-    ["Phone camera", "On a phone, open Forward Scan and tap Camera. Chrome on Android reads barcodes with the rear camera. The camera needs a secure address (https:// or this PC itself); on a plain http:// LAN address use a hardware scanner or Manual entry."],
+    ["Phone camera", "On a phone, tap Camera: the camera stays open in the top half and each result appears below it - just move from label to label (torch and bigger-camera buttons are on the camera). The Forward Scan Android app works on any phone; in a browser use Chrome on Android over https://. Tap Manual to type a number or use a Bluetooth scanner."],
+    ["Amber = Check", "The scan is saved, but something needs a person (not packed in OMS, partly cancelled, already shipped, status changed). The amber \"What to check\" box on the result says exactly what to do."],
     ["Colours & sounds", "Green + 1 beep = OK, put it in the bag. Blue + 3 quick beeps = duplicate, already scanned - set aside. Purple + high-low tone = not found in OMSGuru yet, saved as unverified. Amber + 2 beeps = saved, but check the packet. Red + buzzer = stop (wrong marketplace, cancelled, invalid) - put it aside and press Enter. Tap the legend on the scan page to hear each sound."],
     ["Multi-item shipments", "An amber \"Careful - multi-item shipment\" box lists every SKU and unit. Check all items are inside before bagging it; use Flag issue if something is missing."],
     ["Wrong account or password", "Ask your supervisor or admin - they reset passwords and add users in Admin."],
@@ -351,6 +358,24 @@ export function Shell({ children }: { children: ReactNode }) {
   const dark = useResolvedDark();
   const [menu, setMenu] = useState(false);
   const [help, setHelp] = useState(false);
+  // desktop: the sidebar folds to an icon rail (remembered per device); hovering the rail opens it over the page
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("fs_sidebar_collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  function toggleSidebar() {
+    setCollapsed((c) => {
+      try {
+        localStorage.setItem("fs_sidebar_collapsed", c ? "0" : "1");
+      } catch {
+        /* storage may be blocked - the choice still applies for this visit */
+      }
+      return !c;
+    });
+  }
   const loc = useLocation();
   const nav = useNavigate();
   const [title, subtitle] = (TITLES.find(([re]) => re.test(loc.pathname)) ?? [null, "Forward Scan", ""]).slice(1) as [string, string];
@@ -378,12 +403,22 @@ export function Shell({ children }: { children: ReactNode }) {
   }, [nav]);
 
   return (
-    <div className={cx("app fs-shell", dark && "dark")}>
+    <div className={cx("app fs-shell", dark && "dark", collapsed && "collapsed")}>
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[70] focus:rounded-lg focus:bg-accent focus:px-4 focus:py-2 focus:text-on-accent">
         Skip to content
       </a>
       <aside className={cx("sidebar", menu && "sidebar-open")}>
         <SidebarBody onNavigate={() => setMenu(false)} onHelp={() => setHelp(true)} />
+        <button
+          type="button"
+          className="sidebar-toggle"
+          onClick={toggleSidebar}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-pressed={collapsed}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {collapsed ? <ChevronsRight className="size-4" aria-hidden /> : <ChevronsLeft className="size-4" aria-hidden />}
+        </button>
       </aside>
       {menu && <div className="fixed inset-0 z-20 lg:hidden" onClick={() => setMenu(false)} aria-hidden />}
 

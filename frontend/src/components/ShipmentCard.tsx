@@ -11,7 +11,7 @@ import {
   Undo2,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { fmtDateTime, fmtMoney, FLAG_REASONS, type Order, type ScanContext, type ScanResponse } from "../api";
+import { FLAG_LABELS, fmtDateTime, fmtMoney, FLAG_REASONS, type Order, type ScanContext, type ScanResponse } from "../api";
 import type { Cue } from "../sound";
 import { Button, cx, FlagChips } from "./ui";
 
@@ -53,6 +53,23 @@ export const KIND_META: Record<ScanKind, { title: string; action: string; sound:
   check: { title: "Check", action: "Saved - check the packet before it goes", sound: "2 beeps", icon: AlertTriangle },
   stop: { title: "Stop", action: "Not saved - put this packet aside", sound: "buzzer", icon: OctagonX },
 };
+
+/** A "Check" (amber) scan is saved, but something about the order needs a person: what to do, per reason
+    (the verdict band above already says what is wrong). */
+export const CHECK_HELP: Record<string, { todo: string }> = {
+  NOT_RTS: { todo: "Keep the packet and tell a supervisor - the order must be marked Ready to ship in OMSGuru before the courier pickup." },
+  PARTIAL_CANCEL: { todo: "Open the packet and take out the items marked Cancelled in the list below before it goes." },
+  ALREADY_SHIPPED_IN_OMS: { todo: "Make sure this is not a second copy of the label, then hand the packet to a supervisor." },
+  STATUS_CHANGED: { todo: "Check the OMS status below with a supervisor before the packet goes." },
+  CHANNEL_UNMAPPED: { todo: "The scan is saved and counted. An admin should link this OMSGuru channel in Marketplaces." },
+  FLAGGED: { todo: "Put the packet aside for a supervisor." },
+};
+
+/** The reasons behind a Check verdict that have advice, in the order the server gave them. */
+export function checkReasons(res: Pick<ScanResponse, "code" | "scan">): string[] {
+  const codes = [...(res.scan?.flags ?? []), res.code];
+  return [...new Set(codes)].filter((c) => CHECK_HELP[c]);
+}
 
 /** "1h 24m" / "42 min" */
 export function fmtMins(m: number): string {
@@ -148,7 +165,7 @@ export function ShipmentCard({
   flagging: boolean;
   onFlag: (reason: string) => void;
   onUndo: () => void;
-  onNext: () => void;
+  onNext?: () => void;
   now: number;
 }) {
   const order = res.order ?? res.scan?.order ?? null;
@@ -168,6 +185,7 @@ export function ShipmentCard({
   const msg = (res.message || "").replace(/^[A-Z][A-Z ]+ - /, "");
   const detail = msg && msg !== "Verified" ? msg.charAt(0).toUpperCase() + msg.slice(1) : K.action;
   const tracking = order?.tracking || scan?.tracking || raw;
+  const checks = kind === "check" ? checkReasons(res) : [];
   return (
     <section key={at} className="card shipment-card" aria-label="Scanned shipment">
       {/* verdict + the AWB it is about, in one band */}
@@ -212,11 +230,30 @@ export function ShipmentCard({
               <Undo2 className="size-4" aria-hidden /> Undo
             </Button>
           )}
-          <Button variant="primary" size="sm" onClick={onNext}>
-            Next shipment <ArrowRight className="size-4" aria-hidden />
-          </Button>
+          {/* the phone camera screen has no Next: the next scan simply replaces this card */}
+          {onNext && (
+            <Button variant="primary" size="sm" onClick={onNext}>
+              Next shipment <ArrowRight className="size-4" aria-hidden />
+            </Button>
+          )}
         </div>
       </div>
+
+      {kind === "check" && checks.length > 0 && (
+        <div className="check-help" role="note" aria-label="What to check">
+          <b>
+            <AlertTriangle className="size-4 shrink-0" aria-hidden /> What to check
+          </b>
+          <ul>
+            {checks.map((c) => (
+              <li key={c}>
+                {checks.length > 1 && <span>{FLAG_LABELS[c] ?? c}: </span>}
+                {CHECK_HELP[c].todo}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {order ? (
         <div className={cx("shipment-body", (order.items.length > 0 || shape.multi) && "with-items")}>
