@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- brand green (--brand in frontend/src/figma.css) -->
+    <!-- brand green: the web app brand colour (frontend/src/figma.css) -->
     <color name="ic_launcher_background">#126B4E</color>
 </resources>
