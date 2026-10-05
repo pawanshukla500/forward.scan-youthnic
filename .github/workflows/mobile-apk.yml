@@ -129,17 +129,43 @@ jobs:
           sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/; s/versionName \"[^\"]*\"/versionName \"1.0.${{ github.run_number }}\"/" android/app/build.gradle
           grep -E "versionCode|versionName" android/app/build.gradle
 
+      # Gradle's default debug-key location is not reliable on the runner, so the key goes to a
+      # known file and the generated build.gradle gets an explicit debug signing config.
       - name: Fixed Signing Key
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
         run: |
-          if [ -n "$KEYSTORE_B64" ]; then
-            mkdir -p ~/.android
-            printf '%s' "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
-            echo "Signing with the fixed key from ANDROID_DEBUG_KEYSTORE_B64 - updates install over the previous app."
-          else
+          if [ -z "$KEYSTORE_B64" ]; then
             echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 is not set: this APK gets a throwaway signing key, so phones must uninstall the old Forward Scan app before installing it."
+            exit 0
           fi
+          KS="$RUNNER_TEMP/forward-scan.keystore"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS"
+          keytool -list -keystore "$KS" -storepass android -alias androiddebugkey > /dev/null
+          echo "FS_KEYSTORE=$KS" >> "$GITHUB_ENV"
+          FS_KEYSTORE="$KS" python3 - <<'EOF'
+          import os
+          from pathlib import Path
+          p = Path("android/app/build.gradle")
+          s = p.read_text()
+          assert "\nandroid {" in s, "android block not found"
+          ks = os.environ["FS_KEYSTORE"]
+          block = (
+              "\nandroid {\n"
+              "    signingConfigs {\n"
+              "        debug {\n"
+              f"            storeFile file('{ks}')\n"
+              "            storePassword 'android'\n"
+              "            keyAlias 'androiddebugkey'\n"
+              "            keyPassword 'android'\n"
+              "        }\n"
+              "    }\n"
+          )
+          s = s.replace("\nandroid {\n", block, 1)
+          p.write_text(s)
+          print("debug signing config -> fixed key")
+          EOF
+          echo "Signing with the fixed key from ANDROID_DEBUG_KEYSTORE_B64 - updates install over the previous app."
 
       - name: Build Debug APK
         run: |
@@ -147,9 +173,17 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: Show Signing Certificate
+      # Fail rather than ship an APK that cannot update the installed app.
+      - name: Check Signing Certificate
         run: |
-          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -E "SHA-256|DN"
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | tee /tmp/certs.txt | grep -E "SHA-256|DN"
+          if [ -n "${FS_KEYSTORE:-}" ]; then
+            EXPECTED=$(keytool -list -v -keystore "$FS_KEYSTORE" -storepass android -alias androiddebugkey | grep -m1 "SHA256:" | sed 's/.*SHA256: *//; s/://g' | tr 'A-F' 'a-f')
+            ACTUAL=$(grep -m1 "SHA-256 digest" /tmp/certs.txt | sed 's/.*digest: *//')
+            echo "expected $EXPECTED"
+            echo "actual   $ACTUAL"
+            [ -n "$EXPECTED" ] && [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::The APK is not signed with the fixed key - it could not update installed apps."; exit 1; }
+          fi
 
       # Ground truth for what App info will list: fail the job if CAMERA is missing from the APK.
       - name: Verify Camera Permission in APK
