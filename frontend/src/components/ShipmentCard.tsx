@@ -78,9 +78,9 @@ export function orderShape(order: Order | null | undefined) {
 function Detail({ k, children, sub }: { k: string; children: ReactNode; sub?: ReactNode }) {
   return (
     <div className="min-w-0">
-      <dt className="text-xs font-medium text-muted">{k}</dt>
-      <dd className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[15px] font-semibold">{children || "-"}</dd>
-      {sub && <dd className="truncate text-xs text-muted">{sub}</dd>}
+      <dt className="text-xs leading-4 font-medium text-muted">{k}</dt>
+      <dd className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[15px] leading-5 font-semibold">{children || "-"}</dd>
+      {sub && <dd className="truncate text-xs leading-4 text-muted">{sub}</dd>}
     </div>
   );
 }
@@ -102,11 +102,12 @@ function FlagMenu({ onPick, busy }: { onPick: (reason: string) => void; busy: bo
   }, [open]);
   return (
     <div className="relative" ref={box}>
-      <Button onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-haspopup="menu" loading={busy}>
+      <Button size="sm" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-haspopup="menu" loading={busy}>
         <Flag className="size-4" aria-hidden /> Flag issue
       </Button>
+      {/* the button sits in the bar under the verdict: the menu drops down over the details */}
       {open && (
-        <div role="menu" aria-label="Flag reason" className="flash-in absolute bottom-12 left-0 z-30 w-56 overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-md">
+        <div role="menu" aria-label="Flag reason" className="flash-in absolute left-0 top-full z-30 mt-1 w-56 sm:left-auto sm:right-0 overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-md">
           {FLAG_REASONS.map((r) => (
             <button
               key={r}
@@ -166,104 +167,98 @@ export function ShipmentCard({
   // server messages start with their own shout ("DUPLICATE - already scanned ..."): the banner title says it already
   const msg = (res.message || "").replace(/^[A-Z][A-Z ]+ - /, "");
   const detail = msg && msg !== "Verified" ? msg.charAt(0).toUpperCase() + msg.slice(1) : K.action;
+  const tracking = order?.tracking || scan?.tracking || raw;
   return (
     <section key={at} className="card shipment-card" aria-label="Scanned shipment">
+      {/* verdict + the AWB it is about, in one band */}
       <div className={cx("verdict", `verdict-${kind}`)}>
         <KindIcon className="size-8 shrink-0" aria-hidden />
-        <div className="min-w-0">
+        <div className="verdict-text">
           <b>
             {K.title}
             {reason && <small> · {reason}</small>}
           </b>
           <span>{detail}</span>
         </div>
-      </div>
-      <div className="card-head">
-        <div>
-          <span className="eyebrow">{order ? "Shipment found" : "Shipment"}</span>
-          <h2>{order?.tracking || scan?.tracking || raw}</h2>
+        <div className="verdict-awb">
+          <span>{order ? "AWB · shipment found" : "Scanned"}</span>
+          <b>{tracking}</b>
         </div>
       </div>
-      <div>
-        {scan && scan.flags.length > 0 && (
-          <div className="shipment-notices">
-            <FlagChips flags={scan.flags} />
-          </div>
-        )}
 
-        {order && shape.multi && (
-          <div className="multi-alert">
-            <div className="alert-icon">
-              <AlertTriangle className="size-4" aria-hidden />
-            </div>
-            <div>
-              <b>Careful — multi-item shipment</b>
-              <p>
-                This tracking ID contains{" "}
-                <strong>
-                  {shape.skus} different SKU{shape.skus > 1 ? "s" : ""} and {shape.units} unit{shape.units > 1 ? "s" : ""}.
-                </strong>{" "}
-                Make sure all items are placed in the package.
-              </p>
-            </div>
-            <span>
-              {shape.skus} SKU{shape.skus > 1 ? "s" : ""}
-            </span>
-          </div>
-        )}
-
-        {order && (
-          <div className="shipment-notices">
-            {cod ? (
-              <span className="rounded-full bg-cod-wash px-3 py-1 text-sm font-semibold text-cod">COD · collect {fmtMoney(order.total_amount, order.currency || "INR")}</span>
+      {/* what to watch for (COD, SLA, flags) on the left, what to do on the right */}
+      <div className="shipment-bar">
+        <div className="shipment-tags">
+          {scan && scan.flags.length > 0 && <FlagChips flags={scan.flags} />}
+          {order &&
+            (cod ? (
+              <span className="tag bg-cod-wash text-cod">COD · collect {fmtMoney(order.total_amount, order.currency || "INR")}</span>
             ) : (
-              order.order_type && <span className="rounded-full bg-surface-2 px-3 py-1 text-sm font-semibold text-ink-2">{order.order_type}</span>
-            )}
-            {due?.state === "overdue" && (
-              <span className="rounded-full bg-crit-wash px-3 py-1 text-sm font-semibold text-crit-ink">
-                Overdue · AWB {due.age_days} day{due.age_days > 1 ? "s" : ""} old
+              order.order_type && <span className="tag bg-surface-2 text-ink-2">{order.order_type}</span>
+            ))}
+          {due?.state === "overdue" && (
+            <span className="tag bg-crit-wash text-crit-ink" title={`AWB generated ${due.age_days} day${due.age_days > 1 ? "s" : ""} ago - it should have shipped that day`}>
+              Overdue · {due.age_days} day{due.age_days > 1 ? "s" : ""}
+            </span>
+          )}
+          {slaMins !== null && slaMins < 0 && <span className="tag bg-crit-wash text-crit-ink">SLA passed</span>}
+          {slaMins !== null && slaMins >= 0 && slaMins < 180 && <span className="tag bg-warn-wash text-warn-ink">Priority dispatch · {fmtMins(slaMins)} to SLA</span>}
+          {due?.state === "today" && <span className="tag bg-accent-wash text-accent-ink">AWB generated today</span>}
+        </div>
+        <div className="shipment-actions">
+          {saved && <FlagMenu onPick={onFlag} busy={flagging} />}
+          {saved && canUndo && (
+            <Button variant="ghost" size="sm" onClick={onUndo} title="Undo this scan - the packet can then be scanned again">
+              <Undo2 className="size-4" aria-hidden /> Undo
+            </Button>
+          )}
+          <Button variant="primary" size="sm" onClick={onNext}>
+            Next shipment <ArrowRight className="size-4" aria-hidden />
+          </Button>
+        </div>
+      </div>
+
+      {order ? (
+        <div className={cx("shipment-body", (order.items.length > 0 || shape.multi) && "with-items")}>
+          <dl className="detail-grid">
+            <Detail k="Order ID">
+              <span className="truncate font-mono" title={order.channel_order_id}>
+                {order.channel_order_id}
               </span>
-            )}
-            {slaMins !== null && slaMins < 0 && <span className="rounded-full bg-crit-wash px-3 py-1 text-sm font-semibold text-crit-ink">SLA passed</span>}
-            {slaMins !== null && slaMins >= 0 && slaMins < 180 && (
-              <span className="rounded-full bg-warn-wash px-3 py-1 text-sm font-semibold text-warn-ink">Priority dispatch · {fmtMins(slaMins)} to SLA</span>
-            )}
-            {due?.state === "today" && <span className="rounded-full bg-accent-wash px-3 py-1 text-sm font-semibold text-accent-ink">AWB generated today</span>}
-          </div>
-        )}
+            </Detail>
+            <Detail k="Marketplace" sub={order.company}>
+              <span className="truncate" title={order.channel_label}>
+                {order.channel_label}
+              </span>
+            </Detail>
+            <Detail k="Customer" sub={[order.buyer_city, order.buyer_state, order.buyer_pincode].filter(Boolean).join(", ")}>
+              <span className="truncate">{order.buyer_name}</span>
+            </Detail>
+            <Detail k="Logistics" sub={order.warehouse ? `From ${order.warehouse}` : undefined}>
+              <Truck className="size-4 shrink-0 text-muted" aria-hidden />
+              <span className="truncate">{order.courier}</span>
+            </Detail>
+            <Detail k="Invoice" sub={fmtDateTime(order.invoice_date)}>
+              <span className="truncate font-mono text-sm">{order.invoice_id}</span>
+            </Detail>
+            <Detail k="OMS status">
+              <span className={cx("truncate", /cancel|return/i.test(order.status_text) && "text-crit-ink")}>{order.status_text || order.status_group}</span>
+            </Detail>
+          </dl>
 
-        {order ? (
-          <>
-            <dl className="detail-grid">
-              <Detail k="Order ID">
-                <span className="truncate font-mono">{order.channel_order_id}</span>
-              </Detail>
-              <Detail k="Marketplace" sub={order.company}>
-                <span className="truncate">{order.channel_label}</span>
-              </Detail>
-              <Detail k="Customer" sub={[order.buyer_city, order.buyer_state, order.buyer_pincode].filter(Boolean).join(", ")}>
-                <span className="truncate">{order.buyer_name}</span>
-              </Detail>
-              <Detail k="Logistics" sub={order.warehouse ? `From ${order.warehouse}` : undefined}>
-                <Truck className="size-4 shrink-0 text-muted" aria-hidden />
-                <span className="truncate">{order.courier}</span>
-              </Detail>
-              <Detail k="Invoice" sub={fmtDateTime(order.invoice_date)}>
-                <span className="truncate font-mono text-sm">{order.invoice_id}</span>
-              </Detail>
-              <Detail k="OMS status">
-                <span className={cx("truncate", /cancel|return/i.test(order.status_text) && "text-crit-ink")}>{order.status_text || order.status_group}</span>
-              </Detail>
-            </dl>
-
-            {order.items.length > 0 && (
-              <div className="mt-5">
-                <div className="mb-2 flex items-baseline justify-between gap-3">
-                  <h3 className="text-[15px] font-bold">Items in this shipment</h3>
-                  <span className="text-sm text-muted">
-                    {shape.units} unit{shape.units !== 1 ? "s" : ""} total
-                  </span>
-                </div>
+          {(order.items.length > 0 || shape.multi) && (
+            <div className="items-block">
+              {/* multi-item orders turn the items heading into the amber "careful" warning - same line, no extra box */}
+              <div className={cx("items-head", shape.multi && "multi")} role={shape.multi ? "note" : undefined}>
+                {shape.multi && <AlertTriangle className="size-4 shrink-0" aria-hidden />}
+                <h3>{shape.multi ? "Careful - multi-item shipment" : "Items in this shipment"}</h3>
+                <span>
+                  {shape.multi
+                    ? `${shape.skus} SKU${shape.skus > 1 ? "s" : ""} · ${shape.units} unit${shape.units > 1 ? "s" : ""} - pack every item`
+                    : `${shape.units} unit${shape.units !== 1 ? "s" : ""}`}
+                </span>
+              </div>
+              {order.items.length > 0 && (
                 <div className="sku-list">
                   {order.items.map((it, i) => (
                     <div className="sku-row" key={`${it.sku}-${i}`}>
@@ -280,17 +275,16 @@ export function ShipmentCard({
                             }}
                           />
                         ) : null}
-                        <span
-                          className={cx("thumb-fallback h-full w-full items-center justify-center font-bold text-[9px]", it.image_url ? "hidden" : "flex")}
-                        >
+                        <span className={cx("thumb-fallback h-full w-full items-center justify-center font-bold", it.image_url ? "hidden" : "flex")}>
                           {skuInitials(it.sku)}
                         </span>
                       </div>
-                      <div className="sku-main min-w-0 flex-1">
-                        <b className="truncate" title={it.sku}>{it.sku}</b>
-                        {it.title && <span className="truncate text-[9px] text-muted block" title={it.title}>{it.title}</span>}
-                        <span>
-                          {it.sub_order_id}
+                      <div className="sku-main min-w-0">
+                        <b className="truncate" title={it.sku}>
+                          {it.sku}
+                        </b>
+                        <span className="truncate" title={it.title || undefined}>
+                          {[it.title, it.sub_order_id].filter(Boolean).join(" · ")}
                           {it.status && (
                             <>
                               {" · "}
@@ -299,40 +293,26 @@ export function ShipmentCard({
                           )}
                         </span>
                       </div>
-                      <div className="quantity shrink-0">
-                        <span>QTY</span>
+                      <div className={cx("quantity shrink-0", it.qty > 1 && "many")}>
+                        <span>Qty</span>
                         <b>{it.qty}</b>
                       </div>
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
-          </>
-        ) : (
-          <p className="mt-4 rounded-xl bg-surface-2 p-4 text-sm text-ink-2">
-            {res.code === "NOT_IN_OMS"
-              ? "Saved. OMSGuru is being checked now - this shipment turns green (or raises an alert) automatically once the order syncs."
-              : res.severity === "error"
-                ? "Not saved. Put this packet aside for a supervisor."
-                : "No order details for this barcode."}
-          </p>
-        )}
-
-        <div className="card-actions">
-          <div className="flex flex-wrap gap-2">
-            {saved && <FlagMenu onPick={onFlag} busy={flagging} />}
-            {saved && canUndo && (
-              <Button variant="ghost" onClick={onUndo}>
-                <Undo2 className="size-4" aria-hidden /> Undo scan
-              </Button>
-            )}
-          </div>
-          <button type="button" className="primary" onClick={onNext}>
-            Next shipment <ArrowRight className="size-4" aria-hidden />
-          </button>
+              )}
+            </div>
+          )}
         </div>
-      </div>
+      ) : (
+        <p className="shipment-empty">
+          {res.code === "NOT_IN_OMS"
+            ? "Saved. OMSGuru is being checked now - this shipment turns green (or raises an alert) automatically once the order syncs."
+            : res.severity === "error"
+              ? "Not saved. Put this packet aside for a supervisor."
+              : "No order details for this barcode."}
+        </p>
+      )}
     </section>
   );
 }
@@ -372,13 +352,10 @@ export function JourneyCard({ res, ctx, now }: { res: ScanResponse; ctx: ScanCon
   const pct = ctx?.awb.pct ?? null;
 
   return (
-    <aside className="timeline-card card" aria-label="Order journey">
-      <div className="card-head compact">
-        <div>
-          <span className="eyebrow">Order journey</span>
-          <h3>Shipment activity</h3>
-        </div>
-      </div>
+    <aside className="timeline-card card" aria-labelledby="journey-title">
+      <h3 id="journey-title" className="journey-title">
+        Order journey
+      </h3>
       <div className="timeline">
         {steps.map((s, i) => (
           <div className={cx("timeline-item", s.state === "done" && "done", s.state === "current" && "current")} key={s.name}>
@@ -391,25 +368,15 @@ export function JourneyCard({ res, ctx, now }: { res: ScanResponse; ctx: ScanCon
         ))}
       </div>
 
+      {/* courier + pickup cutoff in one box (the courier name is also under Logistics in the card) */}
       {order && (
         <div className="cutoff-box">
-          <span className="eyebrow">Pickup cutoff</span>
+          <span>Pickup cutoff{courier ? ` · ${courier}` : ""}</span>
           <b>{slaMins === null ? "No SLA from OMSGuru" : slaMins >= 0 ? `${fmtMins(slaMins)} remaining` : `Passed ${fmtMins(slaMins)} ago`}</b>
-          <p>{courier ? `${left} ${courier} orders still pending` : "Courier not set in OMSGuru"}</p>
+          <p>{courier ? `${left} ${courier} order${left !== 1 ? "s" : ""} still pending` : "Courier not set in OMSGuru"}</p>
           <div>
             <i style={{ width: `${Math.min(100, pct ?? 0)}%` }} />
           </div>
-        </div>
-      )}
-
-      {order && (
-        <div className="carrier-box">
-          <div className="carrier-logo">{(courier || "?").slice(0, 1).toUpperCase()}</div>
-          <div>
-            <span>Delivery partner</span>
-            <b>{courier || "-"}</b>
-          </div>
-          <span className="status success">{order.total_qty} units</span>
         </div>
       )}
     </aside>

@@ -14,7 +14,8 @@ from the Figma file and why. Tokens live in `frontend/src/index.css`; shared par
 | Dark accent | `#126b4e` text on dark | `#5ac69a` with near-black text on it | Brand green is 2.1:1 on the dark surface |
 | Data | Sample numbers | Every number from the API (`/api/scan-context`, `/api/dashboard`, `/api/marketplaces`, `/api/reports/*`, `/api/admin/sync`) | No fake data in an operations tool |
 | Scan result | Small "Shipment loaded" pill | Full-width status band, one colour + one sound per result: green OK / blue duplicate / purple not found / amber check / red stop (no voice, 3 Oct 2026) | Packers must read the verdict from a metre away without reading text |
-| Page order on Scan | Lookup → marketplace progress → shipment | Lookup → **shipment** → marketplace progress → queue | The verdict must sit right under the scan box, never below the fold |
+| Page order on Scan | Lookup → marketplace progress → shipment | One compact lookup panel (marketplace + scan box + scanner state, then today's numbers and AWB progress in one row) → **shipment** → queue (5 Oct 2026) | On a 1366x768 laptop the verdict, AWB, order details and items of the scanned packet must all be on screen without scrolling |
+| Shipment card | Card head with AWB, separate multi-item box, actions at the bottom | AWB inside the verdict band; tags + Flag / Undo / Next in one bar; details and items side by side when the card is >= 680 px wide; multi-item warning is the amber items heading; journey beside the card only from 1360 px (a strip below it otherwise) | Same information in about half the height |
 | "Complete scan" | Saves on button press | Saved on Enter (scanner); button is "Next shipment" | 4,500+ scans/day: a scanner gun cannot press a button |
 | Fragile / weight / phone | Shown | Not shown | OMSGuru does not provide them; we never invent fields |
 | Google SSO, "trusted by" proof | Shown on login | Removed | Not available / not true; "Forgot password" tells the user to ask an admin |
@@ -29,7 +30,7 @@ Contrast was checked for every text pair (>= 4.5:1) and control border (>= 3:1) 
   F2 jumps to Forward Scan (last marketplace used). Help card hides on short screens; a `?` button in the
   header opens the same scanner guide. Bell = real alerts after scan, stopped scans, flags and overdue AWBs.
 - **Scan** (`pages/scan-station.md`): one atomic `aria-live` announcement per scan; pause-on-error holds the
-  scanner after a buzzer until Enter; multi-item shipments get the amber box; phones get
+  scanner after a buzzer until Enter; multi-item shipments get the amber items heading; phones get
   Camera / Manual tabs (camera needs https:// or localhost and Chrome's BarcodeDetector, otherwise Manual).
 - **Dashboard** (`pages/dashboard.md`): metric cards link to the list behind them; week-on-week compares with
   the same time of day last week; status colour always has an icon + label.
