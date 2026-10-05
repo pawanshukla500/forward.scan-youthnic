@@ -21,6 +21,7 @@ from .routers import admin, auth, manifests, reconcile, reports, scan
 from .security import hash_password, password_problem, websocket_user
 from .services import backup
 from .services.realtime import hub
+from .services.scanning import clear_shipped_checks
 from .timeutil import utcnow
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -91,6 +92,10 @@ async def lifespan(app: FastAPI):
         log.info("Database upgraded: replaced indexes %s", ", ".join(dropped))
     optimize(initial=True)
     _fill_awb_times()
+    with session_scope() as db:
+        cleared = clear_shipped_checks(db)
+    if cleared:
+        log.info("Cleared the old 'already shipped in OMS' check from %s scans", cleared)
     _bootstrap_admin()
     hub.bind_loop(asyncio.get_running_loop())
     if settings.sync_enabled:

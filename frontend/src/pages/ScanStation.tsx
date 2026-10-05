@@ -54,6 +54,8 @@ function read(key: string): string {
 const LEGEND: ScanKind[] = ["ok", "duplicate", "notfound", "check", "stop"];
 
 const PHONE_QUERY = "(max-width: 767px)";
+/** The server answers in ~0.1-3 s (live OMSGuru lookup is capped at 2.5 s); past this the connection is gone. */
+const SCAN_TIMEOUT_MS = 15000;
 const isPhone = () => window.matchMedia(PHONE_QUERY).matches;
 const norm = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
@@ -257,10 +259,18 @@ export default function ScanStation() {
     while (queue.current.length) {
       const raw = queue.current.shift()!;
       let res: ScanResponse;
+      // A request stuck on a dropped Wi-Fi connection must not hold up the line (or pause the phone camera):
+      // give up after SCAN_TIMEOUT_MS. If it did reach the server, scanning again simply answers Duplicate.
+      const abort = new AbortController();
+      const timer = window.setTimeout(() => abort.abort(), SCAN_TIMEOUT_MS);
       try {
-        res = await api<ScanResponse>("/api/scan", { method: "POST", json: { channel_id: cid, tracking: raw, station } });
+        res = await api<ScanResponse>("/api/scan", { method: "POST", json: { channel_id: cid, tracking: raw, station }, signal: abort.signal });
       } catch (e) {
-        res = { severity: "error", code: "NETWORK", message: `${(e as Error).message} - scan again` };
+        res = abort.signal.aborted
+          ? { severity: "error", code: "NETWORK", message: "No answer from the server - scan again (if it then says Duplicate, the first scan was saved)" }
+          : { severity: "error", code: "NETWORK", message: `${(e as Error).message} - scan again` };
+      } finally {
+        window.clearTimeout(timer);
       }
       setLast({ res, raw, at: Date.now() });
       feedback(res);
@@ -291,8 +301,9 @@ export default function ScanStation() {
       if (fromCamera && looksLikeQr(v)) return;
       const n = norm(v);
       const now = Date.now();
-      // Same label re-read within 8s (label still in view) or already waiting in the queue: drop it.
-      if (n && n === lastSubmit.current.norm && now - lastSubmit.current.at < 8000) return;
+      // Same label read again too soon (camera: label still in view; scanner gun: double trigger) or already
+      // waiting in the queue: drop it. A deliberate re-scan with a gun after a moment still shows Duplicate.
+      if (n && n === lastSubmit.current.norm && now - lastSubmit.current.at < (fromCamera ? 8000 : 3000)) return;
       if (n && queue.current.some((q) => norm(q) === n)) return;
       lastSubmit.current = { norm: n, at: now };
       queue.current.push(v);

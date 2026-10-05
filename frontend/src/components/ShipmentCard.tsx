@@ -59,7 +59,6 @@ export const KIND_META: Record<ScanKind, { title: string; action: string; sound:
 export const CHECK_HELP: Record<string, { todo: string }> = {
   NOT_RTS: { todo: "Keep the packet and tell a supervisor - the order must be marked Ready to ship in OMSGuru before the courier pickup." },
   PARTIAL_CANCEL: { todo: "Open the packet and take out the items marked Cancelled in the list below before it goes." },
-  ALREADY_SHIPPED_IN_OMS: { todo: "Make sure this is not a second copy of the label, then hand the packet to a supervisor." },
   STATUS_CHANGED: { todo: "Check the OMS status below with a supervisor before the packet goes." },
   CHANNEL_UNMAPPED: { todo: "The scan is saved and counted. An admin should link this OMSGuru channel in Marketplaces." },
   FLAGGED: { todo: "Put the packet aside for a supervisor." },
