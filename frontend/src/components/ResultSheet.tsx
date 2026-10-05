@@ -1,7 +1,7 @@
 import { ArrowRight, Undo2, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { ScanResponse } from "../api";
-import { CODE_TITLE, KIND_META, scanKind } from "./ShipmentCard";
+import { CHECK_HELP, checkReasons, CODE_TITLE, KIND_META, scanKind } from "./ShipmentCard";
 import { cx } from "./ui";
 
 /* Phone-only verdict bottom sheet: the moment a scan lands, the packer sees the result
@@ -84,6 +84,12 @@ export function ResultSheet({
         </div>
         <div className="px-5 py-4">
           <p className="text-[15px] font-medium leading-snug text-ink">{detail}</p>
+          {kind === "check" &&
+            checkReasons(last.res).map((c) => (
+              <p key={c} className="mt-2 rounded-lg bg-warn-wash px-3 py-2 text-sm leading-snug text-warn-ink">
+                <b>What to do:</b> {CHECK_HELP[c].todo}
+              </p>
+            ))}
           <dl className="mt-3 space-y-1.5 text-sm">
             <div className="flex items-baseline justify-between gap-3">
               <dt className="shrink-0 text-muted">Tracking</dt>

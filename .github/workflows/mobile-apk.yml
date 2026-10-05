@@ -1,11 +1,16 @@
 name: Build Android APK
 
 # Installable app for the warehouse phones: bundles the web UI with Capacitor and a
-# native ML Kit barcode scanner. Produces an unsigned debug APK that installs
-# directly on Android (allow "Install unknown apps" once). Run from the Actions tab -
-# the APK lands on a GitHub Release so phones can download it straight from GitHub.
+# native ML Kit barcode scanner (embedded, always-on camera). Produces a debug APK that
+# installs directly on Android (allow "Install unknown apps" once). Run from the Actions
+# tab - the APK lands on a GitHub Release so phones can download it straight from GitHub.
 # Login works with the same username/password; the app signs in by Bearer token and
 # stays signed in on the device (no cookies needed).
+#
+# Updates install over the old app only if every build is signed with the SAME key:
+# put a keystore (alias androiddebugkey, password android) base64-encoded in the
+# ANDROID_DEBUG_KEYSTORE_B64 repository secret. Without it each build gets a throwaway
+# key and phones must uninstall the old app first (the job warns about it).
 
 on:
   workflow_dispatch:
@@ -18,6 +23,11 @@ on:
         description: "Release tag the APK is published under (reused/rolling)"
         required: true
         default: "forward-scan-app"
+      publish:
+        description: "Publish to the GitHub Release (off = build-only check, APK kept as a run artifact)"
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: write
@@ -91,11 +101,55 @@ jobs:
           print("camera permission declared")
           EOF
 
+      # Same look as the web app: brand-green icon with the white scan mark (adaptive, round,
+      # themed and pre-Android-8 variants), green launch screen, brand status bar colours.
+      # Vector XML only (frontend/android-res) - Capacitor's default PNG icons and splash go.
+      - name: Brand Icon, Splash and Colours
+        run: |
+          RES=android/app/src/main/res
+          rm -f $RES/mipmap-*/ic_launcher*.png $RES/drawable*/splash.png
+          rm -f $RES/drawable-v24/ic_launcher_foreground.xml $RES/drawable/ic_launcher_background.xml
+          cp -r android-res/. $RES/
+          python3 - <<'EOF'
+          from pathlib import Path
+          p = Path("android/app/src/main/res/values/styles.xml")
+          s = p.read_text()
+          launch = '<style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">'
+          assert launch in s, "launch theme not found"
+          if "windowSplashScreenBackground" not in s:
+              s = s.replace(launch, launch + '\n        <item name="windowSplashScreenBackground">@color/ic_launcher_background</item>\n        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>')
+          p.write_text(s)
+          print(s)
+          EOF
+          ls -R $RES | grep -E "ic_launcher|splash"
+
+      # versionName 1.0.<run> shows in Android's App info, so anyone can see which build a phone runs.
+      - name: Version the App
+        run: |
+          sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/; s/versionName \"[^\"]*\"/versionName \"1.0.${{ github.run_number }}\"/" android/app/build.gradle
+          grep -E "versionCode|versionName" android/app/build.gradle
+
+      - name: Fixed Signing Key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            mkdir -p ~/.android
+            printf '%s' "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+            echo "Signing with the fixed key from ANDROID_DEBUG_KEYSTORE_B64 - updates install over the previous app."
+          else
+            echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 is not set: this APK gets a throwaway signing key, so phones must uninstall the old Forward Scan app before installing it."
+          fi
+
       - name: Build Debug APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
+
+      - name: Show Signing Certificate
+        run: |
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -E "SHA-256|DN"
 
       # Ground truth for what App info will list: fail the job if CAMERA is missing from the APK.
       - name: Verify Camera Permission in APK
@@ -112,17 +166,20 @@ jobs:
           if-no-files-found: error
 
       - name: Rename APK for Release
+        if: ${{ inputs.publish }}
         run: cp android/app/build/outputs/apk/debug/app-debug.apk android/app/build/outputs/apk/debug/forward-scan-app.apk
 
       - name: Publish GitHub Release
+        if: ${{ inputs.publish }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag }}
           name: Forward Scan app (${{ inputs.release_tag }})
           body: |
-            Installable Android app for the warehouse phones. Built from ${{ github.sha }} against ${{ inputs.api_url }}.
+            Installable Android app for the warehouse phones - version 1.0.${{ github.run_number }} (App info shows it). Built from ${{ github.sha }} against ${{ inputs.api_url }}.
 
             Install: download forward-scan-app.apk on the phone, allow "Install unknown apps" once, then sign in with the same Forward Scan username and password.
+            If Android says "App not installed", uninstall the old Forward Scan app once and install again (happens when the signing key changed).
           prerelease: true
           make_latest: true
           files: frontend/android/app/build/outputs/apk/debug/forward-scan-app.apk
