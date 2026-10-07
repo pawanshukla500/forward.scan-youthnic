@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand colors -->
+    <color name="colorPrimary">#126B4E</color>
+    <color name="colorPrimaryDark">#0D553D</color>
+    <color name="colorAccent">#126B4E</color>
+
+    <!-- Scan verdicts -->
+    <color name="verdict_ok">#15803D</color>
+    <color name="verdict_ok_bg">#F0FDF4</color>
+    <color name="verdict_ok_border">#BBF7D0</color>
+
+    <color name="verdict_check">#B45309</color>
+    <color name="verdict_check_bg">#FFFBEB</color>
+    <color name="verdict_check_border">#FDE68A</color>
+
+    <color name="verdict_stop">#B91C1C</color>
+    <color name="verdict_stop_bg">#FEF2F2</color>
+    <color name="verdict_stop_border">#FECACA</color>
+
+    <color name="verdict_duplicate">#C2410C</color>
+    <color name="verdict_duplicate_bg">#FFF7ED</color>
+    <color name="verdict_duplicate_border">#FED7AA</color>
+
+    <color name="verdict_unverified">#D97706</color>
+    <color name="verdict_unverified_bg">#FFFBEB</color>
+    <color name="verdict_unverified_border">#FDE68A</color>
+
+    <!-- UI neutrals -->
+    <color name="background">#F8FAFC</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_card">#FFFFFF</color>
+    <color name="text_primary">#0F172A</color>
+    <color name="text_secondary">#475569</color>
+    <color name="text_muted">#94A3B8</color>
+    <color name="text_on_primary">#FFFFFF</color>
+    <color name="border">#E2E8F0</color>
+    <color name="scanner_overlay">#77000000</color>
+    <color name="viewfinder_reticle">#22C55E</color>
+</resources>

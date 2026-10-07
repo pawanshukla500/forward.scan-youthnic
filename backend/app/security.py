@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import re
+import secrets
 from datetime import timedelta
 
 import bcrypt
@@ -32,6 +34,20 @@ def verify_password(password: str, hashed: str) -> bool:
         return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("ascii"))
     except ValueError:
         return False
+
+
+MOBILE_REFRESH_DAYS = 90
+
+
+def generate_refresh_token() -> str:
+    """Cryptographically secure high-entropy random token for mobile device sessions."""
+    return secrets.token_urlsafe(48)
+
+
+def hash_refresh_token(token: str) -> str:
+    """SHA-256 hash of the refresh token stored in the database."""
+    return hashlib.sha256(token.strip().encode("utf-8")).hexdigest()
+
 
 
 PASSWORD_RULE = "at least 8 characters, with a letter and a number"

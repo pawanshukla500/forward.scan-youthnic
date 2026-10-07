@@ -161,6 +161,7 @@ jobs:
               --exclude='./*.db*' \
               --exclude='./backups' \
               --exclude='./data' \
+              --exclude='./mobile' \
               --exclude='./frontend/node_modules' \
               --exclude='./frontend/dist' \
               --exclude='./frontend/.vite' \

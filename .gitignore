@@ -16,8 +16,14 @@ __pycache__/
 *.db-shm
 *.db-wal
 *.sqlite3
-data/
+/data/
 backups/
+
+# Android build outputs
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
 
 # Frontend
 frontend/node_modules/
