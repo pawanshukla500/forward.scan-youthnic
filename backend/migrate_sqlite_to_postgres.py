@@ -113,10 +113,32 @@ def parse_date_val(val: Any) -> date | None:
 def clean_row_for_table(row_dict: dict[str, Any], table) -> dict[str, Any]:
     cleaned = {}
     for col in table.columns:
-        val = row_dict.get(col.name)
-        if val is None:
-            cleaned[col.name] = None
-        elif isinstance(col.type, Boolean):
+        if col.name not in row_dict or row_dict[col.name] is None:
+            if col.default is not None:
+                if getattr(col.default, "is_scalar", False):
+                    cleaned[col.name] = col.default.arg
+                elif callable(getattr(col.default, "arg", None)):
+                    try:
+                        cleaned[col.name] = col.default.arg(None)
+                    except Exception:
+                        cleaned[col.name] = None
+                else:
+                    cleaned[col.name] = None
+            elif not col.nullable:
+                if isinstance(col.type, Boolean):
+                    cleaned[col.name] = False
+                elif isinstance(col.type, (Integer, Float)):
+                    cleaned[col.name] = 0
+                elif isinstance(col.type, (String, Text)):
+                    cleaned[col.name] = ""
+                else:
+                    cleaned[col.name] = None
+            else:
+                cleaned[col.name] = None
+            continue
+
+        val = row_dict[col.name]
+        if isinstance(col.type, Boolean):
             cleaned[col.name] = bool(val)
         elif isinstance(col.type, DateTime):
             cleaned[col.name] = parse_datetime_val(val)

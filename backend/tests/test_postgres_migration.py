@@ -95,16 +95,15 @@ def test_full_migration_to_postgres(tmp_path):
     """)
     sqlite_cur.execute("""
         CREATE TABLE channels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            code TEXT UNIQUE NOT NULL,
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
             marketplace TEXT NOT NULL,
-            company TEXT NOT NULL,
-            color TEXT NOT NULL,
-            scan_prefix TEXT DEFAULT '',
+            company TEXT DEFAULT '',
+            oms_status TEXT DEFAULT 'active',
             scan_enabled BOOLEAN DEFAULT 1,
+            color TEXT DEFAULT '',
             sort_order INTEGER DEFAULT 10,
-            created_at TIMESTAMP NOT NULL,
+            aliases TEXT DEFAULT '',
             updated_at TIMESTAMP NOT NULL
         );
     """)
@@ -150,8 +149,8 @@ def test_full_migration_to_postgres(tmp_path):
         VALUES (1, 'pawan.shukla', 'Pawan Shukla', 'test@test.com', 'bcrypt_hash', 'admin', 1, '2026-10-07 10:00:00');
     """)
     sqlite_cur.execute("""
-        INSERT INTO channels (id, name, code, marketplace, company, color, scan_enabled, sort_order, created_at, updated_at)
-        VALUES (1, 'Flipkart PPMP', 'FK_PPMP', 'Flipkart PPMP', 'VB EXPORT', '#126B4E', 1, 1, '2026-10-07 10:00:00', '2026-10-07 10:00:00');
+        INSERT INTO channels (id, name, marketplace, company, oms_status, color, scan_enabled, sort_order, aliases, updated_at)
+        VALUES (1, 'Flipkart PPMP', 'Flipkart PPMP', 'VB EXPORT', 'active', '#126B4E', 1, 1, '', '2026-10-07 10:00:00');
     """)
     sqlite_cur.execute("""
         INSERT INTO scans (id, channel_id, user_id, tracking_raw, tracking_norm, result, scanned_at)
