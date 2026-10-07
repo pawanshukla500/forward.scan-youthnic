@@ -51,7 +51,7 @@
     </style>
 
     <!-- Bottom sheets (Pending / Recent scans): rounded top corners -->
-    <style name="ThemeOverlay.ForwardScan.BottomSheet" parent="ThemeOverlay.MaterialComponents.Light.BottomSheetDialog">
+    <style name="ThemeOverlay.ForwardScan.BottomSheet" parent="ThemeOverlay.MaterialComponents.BottomSheetDialog">
         <item name="bottomSheetStyle">@style/Widget.ForwardScan.BottomSheet</item>
     </style>
 
