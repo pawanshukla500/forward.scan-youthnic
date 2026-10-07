@@ -50,6 +50,16 @@ def test_clean_row_conversion():
     assert cleaned["must_change_password"] is False
     assert isinstance(cleaned["created_at"], datetime)
 
+    channel_table = Base.metadata.tables["channels"]
+    raw_channel_row = {
+        "id": 1,
+        "name": "Test Channel",
+        "marketplace": "Flipkart",
+    }
+    cleaned_ch = clean_row_for_table(raw_channel_row, channel_table)
+    assert cleaned_ch["oms_status"] == "active"
+    assert cleaned_ch["scan_enabled"] is True
+
 
 def test_sha256_computation(tmp_path):
     p = tmp_path / "sample.txt"

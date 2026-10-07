@@ -25,7 +25,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Boolean, Date, DateTime, create_engine, text
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, String, Text, create_engine, text
 from sqlalchemy.engine import make_url
 
 # Ensure backend directory is in path
