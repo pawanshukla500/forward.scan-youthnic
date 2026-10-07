@@ -18,6 +18,7 @@ __pycache__/
 *.sqlite3
 /data/
 backups/
+migration-report.json
 
 # Android build outputs
 mobile/android/.gradle/
