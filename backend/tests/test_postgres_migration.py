@@ -190,5 +190,8 @@ def test_full_migration_to_postgres(tmp_path):
 
     # 4. Verify sequences reset and new insert succeeds
     with pg_engine.connect() as conn:
-        res = conn.execute(text("INSERT INTO users (username, password_hash, created_at) VALUES ('new_user', 'hash', NOW()) RETURNING id;")).fetchone()
+        res = conn.execute(text(
+            "INSERT INTO users (username, full_name, email, password_hash, role, is_active, token_version, must_change_password, created_at) "
+            "VALUES ('new_user', 'New User', '', 'hash', 'scanner', true, 0, false, NOW()) RETURNING id;"
+        )).fetchone()
         assert res[0] == 2
