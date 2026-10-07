@@ -10,8 +10,11 @@ on:
     inputs:
       build_engine:
         description: "Build engine ('native' or 'capacitor-legacy')"
-        required: true
-        default: "native"
+        type: choice
+        options:
+          - native
+          - capacitor-legacy
+        default: native
       api_url:
         description: "Server the app talks to"
         required: true
@@ -32,7 +35,7 @@ permissions:
 jobs:
   native-apk:
     name: Build Native Android Release APK
-    if: ${{ inputs.build_engine == 'native' || github.event_name != 'workflow_dispatch' }}
+    if: inputs.build_engine == 'native' || github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -79,6 +82,8 @@ jobs:
         run: ./gradlew lintDebug --no-daemon
 
       - name: Assemble Release APK (R8 & Resource Shrink)
+        env:
+          API_URL: ${{ inputs.api_url }}
         run: ./gradlew assembleRelease --no-daemon
 
       - name: Find Release APK
@@ -107,6 +112,7 @@ jobs:
             echo "::error::versionCode ($VCODE) must be >= 10000 to guarantee monotonic update over previous APK!"
             exit 1
           fi
+          echo "APP_VCODE=$VCODE" >> "$GITHUB_ENV"
 
       # Verify Camera Permission
       - name: Verify Camera Permission
@@ -172,7 +178,7 @@ jobs:
           body: |
             Native Android warehouse application (Kotlin, CameraX, ML Kit).
             Package: shop.youthnic.scan
-            Version: 1.0.${{ github.run_number }} (code: ${{ 10000 + github.run_number }})
+            Version: 1.0.${{ github.run_number }} (code: ${{ env.APP_VCODE }})
             Built from commit ${{ github.sha }} against ${{ inputs.api_url }}.
 
             Features:
@@ -188,7 +194,7 @@ jobs:
 
   capacitor-legacy-apk:
     name: Build Legacy Capacitor APK (Parity Check)
-    if: ${{ inputs.build_engine == 'capacitor-legacy' }}
+    if: inputs.build_engine == 'capacitor-legacy'
     runs-on: ubuntu-latest
     defaults:
       run:

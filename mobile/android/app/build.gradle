@@ -43,14 +43,16 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
-            buildConfigField "String", "DEFAULT_API_URL", "\"https://scan.youthnic.shop\""
+            def defaultApiUrl = System.getenv("API_URL") ?: "https://scan.youthnic.shop"
+            buildConfigField "String", "DEFAULT_API_URL", "\"${defaultApiUrl}\""
         }
         release {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig (signingConfigs.release.storeFile != null ? signingConfigs.release : signingConfigs.debug)
-            buildConfigField "String", "DEFAULT_API_URL", "\"https://scan.youthnic.shop\""
+            def defaultApiUrl = System.getenv("API_URL") ?: "https://scan.youthnic.shop"
+            buildConfigField "String", "DEFAULT_API_URL", "\"${defaultApiUrl}\""
         }
     }
 
