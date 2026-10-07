@@ -87,6 +87,10 @@ async def lifespan(app: FastAPI):
         log.warning("SCAN_RETENTION_DAYS=%s is under a year - keeping scans %s days instead "
                     "(set SCAN_RETENTION_FORCE=true if you really mean it)",
                     settings.scan_retention_requested, settings.scan_retention_days)
+    if settings.scanned_orders_retention_days != settings.scanned_orders_retention_requested:
+        log.warning("SCANNED_ORDERS_RETENTION_DAYS=%s is under a year - keeping scanned orders %s days instead "
+                    "(set SCAN_RETENTION_FORCE=true if you really mean it)",
+                    settings.scanned_orders_retention_requested, settings.scanned_orders_retention_days)
     dropped = drop_retired_indexes()
     if dropped:
         log.info("Database upgraded: replaced indexes %s", ", ".join(dropped))

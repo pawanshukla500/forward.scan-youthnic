@@ -72,6 +72,13 @@ def _scan_retention_days() -> int:
     return 365 if 0 < days < 365 and not _bool("SCAN_RETENTION_FORCE") else days
 
 
+def _scanned_orders_retention_days() -> int:
+    # Scanned orders are kept in PostgreSQL for 1-1.5 years (default 550 days = ~1.5 years).
+    # Minimum 365 days (1 year) unless forced with SCAN_RETENTION_FORCE=true.
+    days = max(0, _int("SCANNED_ORDERS_RETENTION_DAYS", 550))
+    return 365 if 0 < days < 365 and not _bool("SCAN_RETENTION_FORCE") else days
+
+
 @dataclass(frozen=True)
 class Settings:
     oms_base_url: str = os.getenv("OMSGURU_BASE_URL", "https://client.omsguru.com").rstrip("/")
@@ -90,9 +97,12 @@ class Settings:
     cancel_sweep_minutes: int = max(5, _int("CANCEL_SWEEP_MINUTES", 20))
     # Cancellation check looks this many days back (by order date) - only to flag orders already in the working set.
     cancel_check_days: int = min(45, max(1, _int("CANCEL_CHECK_DAYS", 3)))
-    # Days of order data kept, by AWB generation date (channel-wise reconciliation, duplicate / cancel checks).
+    # Days of unscanned order data kept, by AWB generation date (channel-wise reconciliation, duplicate / cancel checks).
     # Orders still Packed / Ready-to-ship are always kept - they are pending.
     retain_orders_days: int = min(45, max(1, _int("RETAIN_ORDERS_DAYS", 7)))
+    # Scanned orders (orders linked to scans) are kept in PostgreSQL for long-term history (default 550 days = 1.5 years).
+    scanned_orders_retention_requested: int = max(0, _int("SCANNED_ORDERS_RETENTION_DAYS", 550))
+    scanned_orders_retention_days: int = field(default_factory=lambda: _scanned_orders_retention_days())
     # Scans are kept this many days from the scan date (0 = keep forever). 1095 = 3 years. Scans are business
     # records: a value under a year is almost certainly a typo for RETAIN_ORDERS_DAYS, so it is raised to 365
     # unless SCAN_RETENTION_FORCE=true (one wrong digit would otherwise delete years of history on next start).

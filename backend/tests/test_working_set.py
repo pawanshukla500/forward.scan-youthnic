@@ -88,28 +88,53 @@ def test_cancel_check_only_touches_stored_orders(env):
 
 def test_order_leaving_ready_to_ship_stops_syncing_and_ages_out_scans_keep_details(env):
     c, eng = env
-    eng._apply_rows([_row("WSLEFT0001", "ODWSL1", "Ready to ship"), _row("WSKEEP0001", "ODWSK1", "Ready to ship")],
-                    "invoices")
+    eng._apply_rows([
+        _row("WSLEFT0001", "ODWSL1", "Ready to ship"),
+        _row("WSKEEP0001", "ODWSK1", "Ready to ship"),
+        _row("WSUNSCANNED1", "ODWSU1", "Ready to ship"),
+    ], "invoices")
     res = c.post("/api/scan", json={"channel_id": int(MOCK_CHANNELS[0]["id"]), "tracking": "WSLEFT0001"}).json()
     assert res["severity"] == "success"
-    # A full Packed / Ready-to-ship refresh that no longer contains WSLEFT0001 (it shipped)
+    # A full Packed / Ready-to-ship refresh that no longer contains WSLEFT0001 or WSUNSCANNED1 (they moved)
     started = int(time.time())
     eng._apply_rows([_row("WSKEEP0001", "ODWSK1", "Ready to ship")], "orders")
     with session_scope() as db:
         db.get(OmsOrder, _get("WSLEFT0001").id).seen_open_at = utcnow() - timedelta(minutes=5)
-    assert eng._mark_moved({"run_started": started}) >= 1
+        db.get(OmsOrder, _get("WSUNSCANNED1").id).seen_open_at = utcnow() - timedelta(minutes=5)
+    assert eng._mark_moved({"run_started": started}) >= 2
     left = _get("WSLEFT0001")
+    unscanned = _get("WSUNSCANNED1")
     assert left.status_group == "MOVED" and left.left_at is not None
-    # still inside the 7 days: kept
+    assert unscanned.status_group == "MOVED" and unscanned.left_at is not None
+
+    # Inside the 7 days: all kept
     sm.prune_orders()
     assert _get("WSLEFT0001") is not None
-    # AWB older than 7 days: removed; the still-open one stays (it is pending) even when just as old
+    assert _get("WSUNSCANNED1") is not None
+
+    # AWB older than 7 days (retain_orders_days):
+    # Unscanned order is removed; still-open one stays (pending);
+    # Scanned order is PRESERVED for long-term history (scanned_orders_retention_days = 550d / 1.5y)
     with session_scope() as db:
         old = utcnow() - timedelta(days=sm.settings.retain_orders_days, hours=1)
         db.get(OmsOrder, left.id).awb_generated_at = old
+        db.get(OmsOrder, unscanned.id).awb_generated_at = old
         db.get(OmsOrder, _get("WSKEEP0001").id).awb_generated_at = old
     assert sm.prune_orders() >= 1
-    assert _get("WSLEFT0001") is None and _get("WSKEEP0001") is not None
+    # Unscanned order removed, pending order kept, scanned order KEPT!
+    assert _get("WSUNSCANNED1") is None
+    assert _get("WSKEEP0001") is not None
+    assert _get("WSLEFT0001") is not None
+    with session_scope() as db:
+        s = db.scalar(select(Scan).where(Scan.tracking_norm == "WSLEFT0001"))
+        assert s.order_id == left.id
+
+    # When scanned order exceeds long-term retention (1.5 years): pruned with order_json fallback
+    with session_scope() as db:
+        ancient = utcnow() - timedelta(days=sm.settings.scanned_orders_retention_days + 1)
+        db.get(OmsOrder, left.id).awb_generated_at = ancient
+    assert sm.prune_orders() >= 1
+    assert _get("WSLEFT0001") is None
     with session_scope() as db:
         s = db.scalar(select(Scan).where(Scan.tracking_norm == "WSLEFT0001"))
         assert s.order_id is None and "ODWSL1" in s.order_json
