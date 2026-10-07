@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     sqlite3 \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies

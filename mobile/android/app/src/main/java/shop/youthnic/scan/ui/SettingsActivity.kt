@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import shop.youthnic.scan.BuildConfig
 import shop.youthnic.scan.ForwardScanApp
+import shop.youthnic.scan.R
 import shop.youthnic.scan.databinding.ActivitySettingsBinding
 
 class SettingsActivity : AppCompatActivity() {
@@ -39,6 +40,12 @@ class SettingsActivity : AppCompatActivity() {
         binding.switchSound.isChecked = sessionManager.isSoundEnabled
         binding.switchVibration.isChecked = sessionManager.isVibrationEnabled
         binding.etServerUrl.setText(sessionManager.serverUrl)
+        if (!BuildConfig.DEBUG) {
+            binding.etServerUrl.isEnabled = false
+            binding.etServerUrl.isFocusable = false
+            binding.etServerUrl.isClickable = false
+            binding.tilServerUrl.helperText = getString(R.string.server_url_locked_hint)
+        }
 
         binding.tvSettingsVersion.text = "Forward Scan v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
 
@@ -79,9 +86,11 @@ class SettingsActivity : AppCompatActivity() {
         sessionManager.stationName = binding.etStationName.text?.toString()?.trim().orEmpty()
         sessionManager.isSoundEnabled = binding.switchSound.isChecked
         sessionManager.isVibrationEnabled = binding.switchVibration.isChecked
-        val url = binding.etServerUrl.text?.toString()?.trim().orEmpty()
-        if (url.startsWith("http://") || url.startsWith("https://")) {
-            sessionManager.serverUrl = url
+        if (BuildConfig.DEBUG) {
+            val url = binding.etServerUrl.text?.toString()?.trim().orEmpty()
+            if (url.startsWith("http://") || url.startsWith("https://")) {
+                sessionManager.serverUrl = url
+            }
         }
     }
 

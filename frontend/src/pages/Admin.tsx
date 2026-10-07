@@ -212,7 +212,7 @@ function Overview({ notify, go }: { notify: Notify; go: (t: Tab) => void }) {
     },
     {
       name: "Data retention",
-      desc: `Order data kept ${s?.retain_orders_days ?? 7} days, scans ${s?.scan_retention_days ? Math.round((s.scan_retention_days / 365) * 10) / 10 + " years" : "forever"}`,
+      desc: `Working set kept ${s?.retain_orders_days ?? 7} days, scanned orders ${s?.scanned_orders_retention_days ? Math.round((s.scanned_orders_retention_days / 365) * 10) / 10 + " years" : "1.5 years"}, scans ${s?.scan_retention_days ? Math.round((s.scan_retention_days / 365) * 10) / 10 + " years" : "forever"}`,
       meta: s ? `${(s.cached_open_orders + (s.cached_left_orders ?? 0)).toLocaleString("en-IN")} orders stored` : "...",
       icon: <Database className="size-5" />,
       onClick: () => go("sync"),
@@ -919,6 +919,7 @@ interface SyncStatus {
   cached_open_orders: number;
   cached_left_orders?: number;
   retain_orders_days?: number;
+  scanned_orders_retention_days?: number;
   scan_retention_days?: number;
   history?: { done?: boolean; windows?: unknown[]; rows?: number };
   jobs: { name: string; last_started: number | null; last_finished: number | null; last_ok: boolean | null; last_message: string; running: boolean }[];
@@ -1288,7 +1289,7 @@ function Sync({ notify }: { notify: Notify }) {
           <div className="text-xs font-medium text-ink-2">Packed / Ready-to-ship (synced)</div>
           <div className="mt-1 text-xl font-semibold">{s.cached_open_orders.toLocaleString("en-IN")}</div>
           <div className="text-xs text-muted">
-            + {(s.cached_left_orders ?? 0).toLocaleString("en-IN")} other AWBs of the last {s.retain_orders_days ?? 7} days (not synced, kept for checks)
+            + {(s.cached_left_orders ?? 0).toLocaleString("en-IN")} other AWBs (unscanned kept {s.retain_orders_days ?? 7}d · scanned orders kept {s.scanned_orders_retention_days ? `${Math.round((s.scanned_orders_retention_days / 365) * 10) / 10}y` : "1.5y"})
           </div>
           <div className="mt-1 text-xs text-muted">
             Scans kept {s.scan_retention_days ? `${Math.round((s.scan_retention_days / 365) * 10) / 10} years` : "forever"}

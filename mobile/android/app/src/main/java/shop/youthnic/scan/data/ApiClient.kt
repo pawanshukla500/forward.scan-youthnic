@@ -186,6 +186,26 @@ class ApiClient(private val sessionManager: SessionManager) {
         )
     }
 
+    fun changePassword(currentPassword: String, newPassword: String): Result<User> {
+        val json = JSONObject().apply {
+            put("current_password", currentPassword)
+            put("new_password", newPassword)
+        }
+        return executeWithAutoRefresh(
+            requestFactory = {
+                newRequestBuilder("/api/auth/change-password")
+                    .post(json.toString().toRequestBody(jsonMediaType))
+                    .build()
+            },
+            parser = { body ->
+                val jsonObj = JSONObject(body)
+                val user = User.fromJson(jsonObj.getJSONObject("user"))
+                sessionManager.saveUser(user)
+                user
+            }
+        )
+    }
+
     fun getChannels(): Result<List<Channel>> {
         return executeWithAutoRefresh(
             requestFactory = { newRequestBuilder("/api/channels").get().build() },

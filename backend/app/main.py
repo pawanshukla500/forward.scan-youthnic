@@ -6,11 +6,11 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from . import models  # noqa: F401 - register tables
 from .config import ROOT_DIR, settings
@@ -87,6 +87,10 @@ async def lifespan(app: FastAPI):
         log.warning("SCAN_RETENTION_DAYS=%s is under a year - keeping scans %s days instead "
                     "(set SCAN_RETENTION_FORCE=true if you really mean it)",
                     settings.scan_retention_requested, settings.scan_retention_days)
+    if settings.scanned_orders_retention_days != settings.scanned_orders_retention_requested:
+        log.warning("SCANNED_ORDERS_RETENTION_DAYS=%s is under a year - keeping scanned orders %s days instead "
+                    "(set SCAN_RETENTION_FORCE=true if you really mean it)",
+                    settings.scanned_orders_retention_requested, settings.scanned_orders_retention_days)
     dropped = drop_retired_indexes()
     if dropped:
         log.info("Database upgraded: replaced indexes %s", ", ".join(dropped))
@@ -131,8 +135,24 @@ STARTED_AT = __import__("time").time()
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "mode": "mock" if settings.oms_use_mock else "live", "ws_clients": hub.count,
-            "started_at": STARTED_AT}
+    db_ok = False
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            db_ok = True
+    except Exception as exc:
+        log.warning("Database health check failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Database connectivity failure") from exc
+
+    backend_type = "sqlite" if settings.database_url.startswith("sqlite") else "postgresql"
+    return {
+        "ok": True,
+        "database_backend": backend_type,
+        "database_ok": db_ok,
+        "mode": "mock" if settings.oms_use_mock else "live",
+        "ws_clients": hub.count,
+        "started_at": STARTED_AT,
+    }
 
 
 @app.websocket("/ws")

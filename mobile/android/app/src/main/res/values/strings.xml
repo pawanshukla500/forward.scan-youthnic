@@ -47,6 +47,20 @@
     <string name="sound_effects">Audio Cues</string>
     <string name="vibration_feedback">Vibration</string>
     <string name="server_url">Server URL</string>
+    <string name="server_url_locked_hint">Locked in production release</string>
     <string name="app_version">App Version</string>
     <string name="preview_mode">Developer UI Preview</string>
+
+    <!-- Change Password -->
+    <string name="change_password_title">Change Password</string>
+    <string name="change_password_instruction">Your account requires a new password before you can proceed to scanning.</string>
+    <string name="current_password_hint">Current password</string>
+    <string name="new_password_hint">New password (min 6 characters)</string>
+    <string name="confirm_new_password_hint">Confirm new password</string>
+    <string name="update_password_button">Update Password &amp; Continue</string>
+    <string name="updating_password">Updating password…</string>
+    <string name="error_password_mismatch">New passwords do not match</string>
+    <string name="error_password_too_short">New password must be at least 6 characters</string>
+    <string name="error_password_same">New password must be different from current password</string>
+    <string name="error_all_fields_required">All password fields are required</string>
 </resources>

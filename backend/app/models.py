@@ -101,11 +101,11 @@ class SkuPhoto(Base):
 
 
 class OmsOrder(Base):
-    """OMSGuru orders whose AWB was generated in the last RETAIN_ORDERS_DAYS, indexed by AWB.
+    """OMSGuru orders indexed by AWB.
 
-    Only Packed / Ready-to-ship orders are kept in sync; once an order leaves that state its last known
-    status is kept (for pending / duplicate / cancel checks) until it is older than RETAIN_ORDERS_DAYS.
-    Scans keep their own copy of the order details (Scan.order_json) for long-term history.
+    Unscanned orders that leave Packed / Ready-to-ship are kept for RETAIN_ORDERS_DAYS (7 days).
+    Orders that were SCANNED are preserved for long-term history in PostgreSQL (SCANNED_ORDERS_RETENTION_DAYS,
+    default 550 days / ~1.5 years) with active relations to scans.
     """
 
     __tablename__ = "oms_orders"

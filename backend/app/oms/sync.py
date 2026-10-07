@@ -229,6 +229,7 @@ class SyncEngine:
             "cached_open_orders": open_cnt,
             "cached_left_orders": left_cnt,
             "retain_orders_days": settings.retain_orders_days,
+            "scanned_orders_retention_days": settings.scanned_orders_retention_days,
             "scan_retention_days": settings.scan_retention_days,
             "history": _get_state("history_backfill") or {"done": bool(_get_state("history_done"))},
             "invoices_cursor": _get_state("invoices_cursor"),
@@ -1002,25 +1003,44 @@ def _find_existing(db, data: dict) -> OmsOrder | None:
 
 
 def prune_orders() -> int:
-    """Keep RETAIN_ORDERS_DAYS of orders (by AWB generation date). Orders still Packed / Ready-to-ship are
-    kept - they are pending. Scans keep their own copy of the order details, so nothing is lost."""
+    """Keep RETAIN_ORDERS_DAYS of orders (by AWB generation date) for unscanned working-set orders.
+    Orders that were SCANNED are preserved for long-term history in PostgreSQL (SCANNED_ORDERS_RETENTION_DAYS,
+    default 550 days / ~1.5 years) so all scanned order relations, buyer information, and items remain queryable.
+    Orders still Packed / Ready-to-ship are always kept as pending."""
     import json as _json
 
     from ..models import Scan
     from ..services.scanning import order_payload
 
     now = utcnow()
-    cutoff = now - timedelta(days=settings.retain_orders_days)
+    cutoff_working_set = now - timedelta(days=settings.retain_orders_days)
+    cutoff_scanned = now - timedelta(days=settings.scanned_orders_retention_days)
     with session_scope() as db:
         # rows from before awb_generated_at existed
         db.execute(update(OmsOrder).where(OmsOrder.awb_generated_at.is_(None), OmsOrder.tracking_norm != "")
                    .values(awb_generated_at=func.coalesce(OmsOrder.invoice_date, OmsOrder.first_seen_at)))
-        doomed = list(db.scalars(
-            select(OmsOrder).where(
-                OmsOrder.status_group.notin_(WORKING_SET),
-                (func.coalesce(OmsOrder.awb_generated_at, OmsOrder.first_seen_at) < cutoff)
-                | ((OmsOrder.tracking_norm == "") & (OmsOrder.synced_at < now - timedelta(days=1))),
+
+        is_scanned = exists().where(
+            (Scan.order_id == OmsOrder.id) | (Scan.tracking_norm == OmsOrder.tracking_norm)
+        )
+
+        unscanned_doomed = (
+            OmsOrder.status_group.notin_(WORKING_SET)
+            & ~is_scanned
+            & (
+                (func.coalesce(OmsOrder.awb_generated_at, OmsOrder.first_seen_at) < cutoff_working_set)
+                | ((OmsOrder.tracking_norm == "") & (OmsOrder.synced_at < now - timedelta(days=1)))
             )
+        )
+
+        scanned_doomed = (
+            OmsOrder.status_group.notin_(WORKING_SET)
+            & is_scanned
+            & (func.coalesce(OmsOrder.awb_generated_at, OmsOrder.first_seen_at) < cutoff_scanned)
+        )
+
+        doomed = list(db.scalars(
+            select(OmsOrder).where(unscanned_doomed | scanned_doomed)
         ))
         if not doomed:
             return 0

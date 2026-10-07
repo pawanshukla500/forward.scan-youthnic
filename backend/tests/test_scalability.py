@@ -128,6 +128,13 @@ def test_scan_retention_under_a_year_needs_force(monkeypatch, value, force, expe
     assert config._scan_retention_days() == expected
 
 
+@pytest.mark.parametrize("value,force,expected", [("60", "", 365), ("0", "", 0), ("550", "", 550), ("60", "true", 60)])
+def test_scanned_orders_retention_under_a_year_needs_force(monkeypatch, value, force, expected):
+    monkeypatch.setenv("SCANNED_ORDERS_RETENTION_DAYS", value)
+    monkeypatch.setenv("SCAN_RETENTION_FORCE", force)
+    assert config._scanned_orders_retention_days() == expected
+
+
 def test_live_calls_leave_credits_for_sync_and_never_queue():
     async def go():
         cl = OmsClient()

@@ -64,7 +64,7 @@ def ensure_columns() -> list[str]:
                 if col.default is not None and getattr(col.default, "is_scalar", False):
                     val = col.default.arg
                     default = f" DEFAULT '{val}'" if isinstance(val, str) else f" DEFAULT {int(val)}"
-                conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN {col.name} {ddl_type}{default}'))
+                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ddl_type}{default}'))
                 added.append(f"{table.name}.{col.name}")
             for idx in table.indexes:
                 if all(c.name in have or f"{table.name}.{c.name}" in added for c in idx.columns):
@@ -89,7 +89,7 @@ def drop_retired_indexes() -> list[str]:
     gone = [n for n in RETIRED_INDEXES if n in have]
     with engine.begin() as conn:
         for name in gone:
-            conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
+            conn.execute(text(f'DROP INDEX IF EXISTS "{name}"'))
     return gone
 
 

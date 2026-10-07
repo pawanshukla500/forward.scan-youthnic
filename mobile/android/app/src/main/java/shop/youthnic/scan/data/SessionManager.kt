@@ -122,6 +122,18 @@ class SessionManager(private val context: Context) {
         editor.apply()
     }
 
+    fun saveUser(user: User) {
+        val userJson = JSONObject().apply {
+            put("id", user.id)
+            put("username", user.username)
+            put("full_name", user.fullName)
+            put("email", user.email)
+            put("role", user.role)
+            put("must_change_password", user.mustChangePassword)
+        }
+        prefs.edit().putString(PREF_USER_JSON, userJson.toString()).apply()
+    }
+
     fun updateTokens(accessToken: String, expiresAt: String, newRefreshToken: String? = null, newRefreshExpiresAt: String? = null) {
         val editor = prefs.edit()
         editor.putString(PREF_ACCESS_TOKEN, accessToken)

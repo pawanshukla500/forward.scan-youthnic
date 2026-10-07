@@ -42,6 +42,11 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".ui.ChangePasswordActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".ui.ChannelActivity"
             android:exported="false" />
 

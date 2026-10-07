@@ -41,4 +41,29 @@ class SessionAndApiTest {
         assertEquals("https://scan.youthnic.shop", raw1.trim().removeSuffix("/"))
         assertEquals("https://scan.youthnic.shop", raw2.trim().replace(Regex("/+$"), ""))
     }
+
+    @Test
+    fun testMustChangePasswordFlag() {
+        val u1 = shop.youthnic.scan.data.User(1, "u1", "U1", "", "scanner", mustChangePassword = true)
+        val u2 = shop.youthnic.scan.data.User(2, "u2", "U2", "", "scanner", mustChangePassword = false)
+        assertTrue(u1.mustChangePassword)
+        org.junit.Assert.assertFalse(u2.mustChangePassword)
+    }
+
+    @Test
+    fun testPasswordChangeValidationRules() {
+        fun validatePasswordChange(current: String, newP: String, confirm: String): String? {
+            if (current.isBlank() || newP.isBlank() || confirm.isBlank()) return "All fields required"
+            if (newP.length < 6) return "Too short"
+            if (newP == current) return "Cannot be same"
+            if (newP != confirm) return "Mismatch"
+            return null
+        }
+
+        assertEquals("All fields required", validatePasswordChange("", "newPass1", "newPass1"))
+        assertEquals("Too short", validatePasswordChange("currPass1", "short", "short"))
+        assertEquals("Cannot be same", validatePasswordChange("samePass1", "samePass1", "samePass1"))
+        assertEquals("Mismatch", validatePasswordChange("currPass1", "newPass12", "newPass99"))
+        assertEquals(null, validatePasswordChange("currPass1", "newPass12", "newPass12"))
+    }
 }

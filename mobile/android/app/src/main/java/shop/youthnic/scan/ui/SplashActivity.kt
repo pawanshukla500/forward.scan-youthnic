@@ -49,12 +49,22 @@ class SplashActivity : AppCompatActivity() {
             }
 
             if (result.isSuccess) {
-                navigateToChannels()
+                val user = sessionManager.getUser()
+                if (user?.mustChangePassword == true) {
+                    navigateToChangePassword()
+                } else {
+                    navigateToChannels()
+                }
             } else {
                 val ex = result.exceptionOrNull()
                 if (ex is NetworkException) {
                     // Offline - do not kick user out! Allow entering channel screen.
-                    navigateToChannels()
+                    val user = sessionManager.getUser()
+                    if (user?.mustChangePassword == true) {
+                        navigateToChangePassword()
+                    } else {
+                        navigateToChannels()
+                    }
                 } else {
                     // Invalid/revoked session
                     sessionManager.clearSession()
@@ -62,6 +72,11 @@ class SplashActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun navigateToChangePassword() {
+        startActivity(Intent(this, ChangePasswordActivity::class.java))
+        finish()
     }
 
     private fun navigateToChannels() {
