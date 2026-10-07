@@ -47,9 +47,14 @@ class LoginActivity : AppCompatActivity() {
                 setLoading(false)
 
                 if (result.isSuccess) {
+                    val auth = result.getOrNull()
                     // Password is NOT saved.
                     binding.etPassword.text?.clear()
-                    startActivity(Intent(this@LoginActivity, ChannelActivity::class.java))
+                    if (auth?.user?.mustChangePassword == true) {
+                        startActivity(Intent(this@LoginActivity, ChangePasswordActivity::class.java))
+                    } else {
+                        startActivity(Intent(this@LoginActivity, ChannelActivity::class.java))
+                    }
                     finish()
                 } else {
                     val msg = result.exceptionOrNull()?.message ?: "Sign in failed"

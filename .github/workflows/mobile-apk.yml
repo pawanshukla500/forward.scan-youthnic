@@ -66,8 +66,8 @@ jobs:
           KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
         run: |
           if [ -z "$KEYSTORE_B64" ]; then
-            echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 is not set: using default debug signing key."
-            exit 0
+            echo "::error::ANDROID_DEBUG_KEYSTORE_B64 secret is missing! Production release APK requires the fixed warehouse signing key."
+            exit 1
           fi
           KS="$RUNNER_TEMP/forward-scan.keystore"
           printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS"
