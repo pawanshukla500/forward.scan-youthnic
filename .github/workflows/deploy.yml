@@ -87,7 +87,7 @@ jobs:
           OMSGURU_USE_MOCK: ${{ vars.OMSGURU_USE_MOCK || 'false' }}
           SYNC_INTERVAL_SECONDS: ${{ vars.SYNC_INTERVAL_SECONDS || '60' }}
           BATCH_LIMIT: ${{ vars.BATCH_LIMIT || '100' }}
-          DATABASE_URL: ${{ vars.DATABASE_URL || 'sqlite:///data/omsguru_forward_scan.db' }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL || vars.DATABASE_URL || 'sqlite:///data/omsguru_forward_scan.db' }}
           APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
           ADMIN_NAME: ${{ vars.ADMIN_NAME || 'Pawan Shukla' }}
           ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL || 'returnorders@vbexports.co.in' }}

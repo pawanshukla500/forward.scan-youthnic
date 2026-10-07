@@ -242,7 +242,7 @@ def backup_now(kind: str, _: User = Depends(require_admin)):
     if kind not in ("full", "recent"):
         raise HTTPException(400, "kind must be full or recent")
     if not backup.enabled():
-        raise HTTPException(400, "Automatic backups are off (BACKUP_ENABLED=false, or not an SQLite database)")
+        raise HTTPException(400, "Automatic backups are off (BACKUP_ENABLED=false)")
     backup.request(kind)
     return {"ok": True, "queued": kind}
 

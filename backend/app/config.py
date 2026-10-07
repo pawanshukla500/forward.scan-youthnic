@@ -26,6 +26,15 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def normalize_database_url(url: str) -> str:
+    url = (url or "").strip()
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
 def _database_url() -> str:
     url = os.getenv("DATABASE_URL", "").strip() or "sqlite:///omsguru_forward_scan.db"
     # Relative sqlite paths resolve against the project root, not the cwd.
@@ -40,10 +49,7 @@ def _database_url() -> str:
     elif url.startswith("sqlite:////"):
         abs_path = Path("/" + url[len("sqlite:////"):])
         abs_path.parent.mkdir(parents=True, exist_ok=True)
-    # Railway / Heroku style URLs.
-    if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://"):]
-    return url
+    return normalize_database_url(url)
 
 
 def _default_backup_dir() -> str:
