@@ -430,6 +430,7 @@ def migrate(
         "target_host": u.host,
         "target_port": u.port,
         "status": "SUCCESS" if verification_results.get("all_matched", False) else "FAILED",
+        "success": bool(verification_results.get("all_matched", False)),
         "sequences": sequence_results,
         "verification": verification_results,
     }
