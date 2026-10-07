@@ -1,25 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Continuous scanner: header (channel, connection, today's progress) | always-open camera | last result |
+     action bar (Torch, Manual, Pending, Recent). Ids are shared with PreviewActivity (debug UI preview). -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/background"
     android:orientation="vertical">
 
-    <!-- Top Bar: Channel, Connection, Progress -->
+    <!-- Header -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="@color/surface"
         android:elevation="3dp"
         android:orientation="vertical"
-        android:paddingHorizontal="12dp"
-        android:paddingVertical="8dp">
+        android:paddingStart="4dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="8dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
+            android:minHeight="52dp"
             android:orientation="horizontal">
 
             <ImageButton
@@ -27,17 +32,18 @@
                 android:layout_width="48dp"
                 android:layout_height="48dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Change marketplace"
+                android:contentDescription="@string/change_marketplace"
                 android:padding="12dp"
-                android:src="@drawable/ic_launcher_foreground"
+                android:src="@drawable/ic_arrow_back"
                 app:tint="@color/text_primary" />
 
             <View
                 android:id="@+id/viewChannelColor"
-                android:layout_width="8dp"
-                android:layout_height="20dp"
+                android:layout_width="4dp"
+                android:layout_height="22dp"
+                android:layout_marginStart="2dp"
                 android:layout_marginEnd="8dp"
-                android:background="@drawable/splash"
+                android:background="@drawable/bg_marker"
                 android:backgroundTint="@color/colorPrimary" />
 
             <TextView
@@ -46,19 +52,20 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:ellipsize="end"
-                android:maxLines="1"
-                android:text="Channel Name"
+                android:maxLines="2"
                 android:textColor="@color/text_primary"
                 android:textSize="16sp"
-                android:textStyle="bold" />
+                android:textStyle="bold"
+                tools:text="Tulip Prints - Meesho" />
 
             <TextView
                 android:id="@+id/tvConnectionStatus"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:background="@drawable/splash"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_pill"
                 android:backgroundTint="@color/verdict_ok_bg"
-                android:paddingHorizontal="8dp"
+                android:paddingHorizontal="10dp"
                 android:paddingVertical="3dp"
                 android:text="@string/connection_online"
                 android:textColor="@color/verdict_ok"
@@ -66,11 +73,10 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- Progress info -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginStart="12dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
@@ -79,17 +85,18 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Scanned: 0"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
+                android:textSize="13sp"
+                tools:text="4 scanned today" />
 
             <TextView
                 android:id="@+id/tvProgressPending"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="0 pending"
-                android:textColor="@color/text_muted"
-                android:textSize="12sp" />
+                android:textColor="@color/verdict_check"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                tools:text="186 pending" />
         </LinearLayout>
 
         <ProgressBar
@@ -97,17 +104,37 @@
             style="?android:attr/progressBarStyleHorizontal"
             android:layout_width="match_parent"
             android:layout_height="4dp"
-            android:layout_marginTop="4dp"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="6dp"
             android:max="100"
             android:progress="0"
+            android:progressBackgroundTint="@color/progress_track"
             android:progressTint="@color/colorPrimary" />
     </LinearLayout>
 
-    <!-- Camera Window (Fixed 45% screen height) -->
+    <!-- App update available: never covers the camera, tap to install -->
+    <TextView
+        android:id="@+id/tvUpdateBanner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/colorPrimary"
+        android:drawablePadding="8dp"
+        android:gravity="center_vertical"
+        android:minHeight="40dp"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="8dp"
+        android:textColor="@color/text_on_primary"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:visibility="gone"
+        tools:text="Update 1.0.21 available - tap to install"
+        tools:visibility="visible" />
+
+    <!-- Camera: always open; height is set to ~1/3 of the screen in ScannerActivity -->
     <FrameLayout
         android:id="@+id/cameraContainer"
         android:layout_width="match_parent"
-        android:layout_height="250dp"
+        android:layout_height="240dp"
         android:background="#000000">
 
         <androidx.camera.view.PreviewView
@@ -115,23 +142,22 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
-        <!-- Viewfinder Scanning Rectangle -->
         <View
             android:id="@+id/viewFinder"
             android:layout_width="260dp"
-            android:layout_height="100dp"
+            android:layout_height="96dp"
             android:layout_gravity="center"
             android:background="@drawable/viewfinder_border" />
 
-        <!-- Hint Overlay -->
         <TextView
             android:id="@+id/tvScannerHint"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom|center_horizontal"
-            android:layout_marginBottom="8dp"
-            android:background="#99000000"
-            android:paddingHorizontal="10dp"
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/bg_pill"
+            android:backgroundTint="#99000000"
+            android:paddingHorizontal="12dp"
             android:paddingVertical="4dp"
             android:text="@string/aim_at_awb"
             android:textColor="#FFFFFF"
@@ -160,14 +186,16 @@
             android:orientation="vertical"
             android:padding="12dp">
 
-            <!-- Result Card -->
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/cardResult"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                app:cardCornerRadius="10dp"
-                app:cardElevation="2dp"
-                app:strokeWidth="1.5dp">
+                android:visibility="gone"
+                app:cardBackgroundColor="@color/surface"
+                app:cardCornerRadius="12dp"
+                app:cardElevation="1dp"
+                app:strokeWidth="2dp"
+                tools:visibility="visible">
 
                 <LinearLayout
                     android:id="@+id/layoutResultContent"
@@ -175,13 +203,11 @@
                     android:layout_height="wrap_content"
                     android:orientation="vertical">
 
-                    <!-- Verdict Banner -->
                     <LinearLayout
                         android:id="@+id/bannerVerdict"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:background="@color/verdict_ok"
-                        android:gravity="center_vertical"
                         android:orientation="vertical"
                         android:paddingHorizontal="16dp"
                         android:paddingVertical="10dp">
@@ -192,54 +218,53 @@
                             android:layout_height="wrap_content"
                             android:text="@string/verdict_verified"
                             android:textColor="@color/text_on_primary"
-                            android:textSize="17sp"
+                            android:textSize="18sp"
                             android:textStyle="bold" />
 
                         <TextView
                             android:id="@+id/tvVerdictMessage"
-                            android:layout_width="wrap_content"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="2dp"
-                            android:text="Verified - place in dispatch bag"
                             android:textColor="@color/text_on_primary"
-                            android:textSize="13sp" />
+                            android:textSize="13sp"
+                            tools:text="Verified - place in dispatch bag" />
                     </LinearLayout>
 
-                    <!-- Details Body -->
                     <LinearLayout
                         android:id="@+id/layoutShipmentDetails"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="vertical"
-                        android:padding="14dp">
+                        android:paddingHorizontal="14dp"
+                        android:paddingTop="10dp"
+                        android:paddingBottom="12dp">
 
-                        <!-- AWB -->
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="AWB NUMBER"
+                            android:text="@string/label_awb"
                             android:textColor="@color/text_muted"
                             android:textSize="10sp"
                             android:textStyle="bold" />
 
                         <TextView
                             android:id="@+id/tvResultAwb"
-                            android:layout_width="wrap_content"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
                             android:fontFamily="monospace"
-                            android:text="FMPC1234567890"
                             android:textColor="@color/text_primary"
-                            android:textSize="18sp"
-                            android:textStyle="bold" />
+                            android:textIsSelectable="true"
+                            android:textSize="19sp"
+                            android:textStyle="bold"
+                            tools:text="FMPC1234567890" />
 
                         <View
                             android:layout_width="match_parent"
                             android:layout_height="1dp"
-                            android:layout_marginVertical="10dp"
+                            android:layout_marginVertical="8dp"
                             android:background="@color/border" />
 
-                        <!-- Key Order Info -->
                         <LinearLayout
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
@@ -248,27 +273,28 @@
                             <LinearLayout
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
+                                android:layout_marginEnd="8dp"
                                 android:layout_weight="1"
                                 android:orientation="vertical">
 
                                 <TextView
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
-                                    android:text="ORDER ID"
+                                    android:text="@string/label_order_id"
                                     android:textColor="@color/text_muted"
                                     android:textSize="10sp"
                                     android:textStyle="bold" />
 
                                 <TextView
                                     android:id="@+id/tvResultOrderId"
-                                    android:layout_width="wrap_content"
+                                    android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
-                                    android:ellipsize="end"
+                                    android:ellipsize="middle"
                                     android:maxLines="1"
-                                    android:text="OD-12345"
                                     android:textColor="@color/text_primary"
                                     android:textSize="14sp"
-                                    android:textStyle="bold" />
+                                    android:textStyle="bold"
+                                    tools:text="OD-12345" />
                             </LinearLayout>
 
                             <LinearLayout
@@ -280,43 +306,61 @@
                                 <TextView
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
-                                    android:text="ITEMS &amp; UNITS"
+                                    android:text="@string/label_courier"
                                     android:textColor="@color/text_muted"
                                     android:textSize="10sp"
                                     android:textStyle="bold" />
 
                                 <TextView
-                                    android:id="@+id/tvResultItemsCount"
-                                    android:layout_width="wrap_content"
+                                    android:id="@+id/tvResultCourier"
+                                    android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
-                                    android:text="1 SKU (1 Unit)"
+                                    android:ellipsize="end"
+                                    android:maxLines="1"
                                     android:textColor="@color/text_primary"
                                     android:textSize="14sp"
-                                    android:textStyle="bold" />
+                                    android:textStyle="bold"
+                                    tools:text="Delhivery" />
                             </LinearLayout>
                         </LinearLayout>
 
-                        <!-- Items list container -->
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:text="@string/label_items"
+                            android:textColor="@color/text_muted"
+                            android:textSize="10sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/tvResultItemsCount"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_primary"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            tools:text="1 SKU · 1 unit" />
+
                         <LinearLayout
                             android:id="@+id/layoutItemsList"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
+                            android:layout_marginTop="4dp"
                             android:orientation="vertical" />
 
                     </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
-            <!-- Initial Idle State Card (Shown before any scan) -->
+            <!-- Before the first scan -->
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/cardIdleState"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:visibility="visible"
                 app:cardBackgroundColor="@color/surface"
-                app:cardCornerRadius="10dp"
-                app:cardElevation="1dp"
+                app:cardCornerRadius="12dp"
+                app:cardElevation="0dp"
                 app:strokeColor="@color/border"
                 app:strokeWidth="1dp">
 
@@ -325,12 +369,12 @@
                     android:layout_height="wrap_content"
                     android:gravity="center"
                     android:orientation="vertical"
-                    android:padding="24dp">
+                    android:padding="20dp">
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="READY TO SCAN"
+                        android:text="@string/ready_to_scan"
                         android:textColor="@color/colorPrimary"
                         android:textSize="16sp"
                         android:textStyle="bold" />
@@ -340,7 +384,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="6dp"
                         android:gravity="center"
-                        android:text="Point the camera at the 1-D barcode on the shipping label.\nVerification happens instantly."
+                        android:text="@string/ready_to_scan_hint"
                         android:textColor="@color/text_secondary"
                         android:textSize="13sp" />
                 </LinearLayout>
@@ -349,55 +393,92 @@
         </LinearLayout>
     </ScrollView>
 
-    <!-- Bottom Action Bar (48dp touch targets) -->
+    <!-- Action bar: icon + label buttons, 64dp tall (thumb-friendly) -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="@color/surface"
-        android:elevation="4dp"
-        android:gravity="center_vertical"
+        android:elevation="6dp"
         android:orientation="horizontal"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="8dp">
+        android:paddingHorizontal="4dp"
+        android:paddingVertical="4dp">
 
-        <com.google.android.material.button.MaterialButton
+        <LinearLayout
             android:id="@+id/btnTorch"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:text="@string/torch_on"
-            android:textColor="@color/text_primary"
-            android:textSize="12sp"
-            app:cornerRadius="8dp"
-            app:strokeColor="@color/border" />
+            style="@style/ScannerAction">
 
-        <com.google.android.material.button.MaterialButton
+            <ImageView
+                android:id="@+id/ivTorch"
+                style="@style/ScannerActionIcon"
+                android:src="@drawable/ic_torch" />
+
+            <TextView
+                android:id="@+id/tvTorchLabel"
+                style="@style/ScannerActionLabel"
+                android:text="@string/torch_off" />
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/btnManual"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_marginHorizontal="6dp"
-            android:layout_weight="1"
-            android:text="@string/manual_entry"
-            android:textColor="@color/text_primary"
-            android:textSize="12sp"
-            app:cornerRadius="8dp"
-            app:strokeColor="@color/border" />
+            style="@style/ScannerAction">
 
-        <com.google.android.material.button.MaterialButton
+            <ImageView
+                style="@style/ScannerActionIcon"
+                android:src="@drawable/ic_keyboard" />
+
+            <TextView
+                style="@style/ScannerActionLabel"
+                android:text="@string/manual_entry" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btnPending"
+            style="@style/ScannerAction">
+
+            <FrameLayout
+                android:layout_width="56dp"
+                android:layout_height="24dp">
+
+                <ImageView
+                    style="@style/ScannerActionIcon"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_pending" />
+
+                <TextView
+                    android:id="@+id/tvPendingBadge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="16dp"
+                    android:layout_gravity="top|end"
+                    android:background="@drawable/bg_pill"
+                    android:backgroundTint="@color/verdict_check"
+                    android:gravity="center"
+                    android:minWidth="16dp"
+                    android:paddingHorizontal="4dp"
+                    android:textColor="@color/text_on_primary"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:visibility="gone"
+                    tools:text="186"
+                    tools:visibility="visible" />
+            </FrameLayout>
+
+            <TextView
+                style="@style/ScannerActionLabel"
+                android:text="@string/pending_label_title" />
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/btnRecent"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="6dp"
-            android:layout_weight="1"
-            android:text="@string/recent_scans"
-            android:textColor="@color/text_primary"
-            android:textSize="12sp"
-            app:cornerRadius="8dp"
-            app:strokeColor="@color/border" />
+            style="@style/ScannerAction">
+
+            <ImageView
+                style="@style/ScannerActionIcon"
+                android:src="@drawable/ic_history" />
+
+            <TextView
+                style="@style/ScannerActionLabel"
+                android:text="@string/recent_short" />
+        </LinearLayout>
 
     </LinearLayout>
 

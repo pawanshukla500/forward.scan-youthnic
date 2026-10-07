@@ -17,5 +17,7 @@ os.environ["ADMIN_EMAIL"] = ""  # the .env default admin is not created in tests
 os.environ["ADMIN_NAME"] = "Administrator"
 os.environ["BATCH_LIMIT"] = "100"
 os.environ["CACHE_MIN_INTERVAL"] = "0"  # tests read numbers right after each change
+os.environ["APP_RELEASE_DIR"] = (_tmp / "app").as_posix()  # where the APK workflow drops the app
+os.environ["PUBLIC_URL"] = ""
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

@@ -37,4 +37,7 @@
     <color name="border">#E2E8F0</color>
     <color name="scanner_overlay">#77000000</color>
     <color name="viewfinder_reticle">#22C55E</color>
+    <color name="surface_muted">#F1F5F9</color>
+    <color name="brand_soft">#E7F3EE</color>
+    <color name="progress_track">#E2E8F0</color>
 </resources>

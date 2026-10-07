@@ -10,6 +10,7 @@ import androidx.core.content.ContextCompat
 import shop.youthnic.scan.BuildConfig
 import shop.youthnic.scan.R
 import shop.youthnic.scan.databinding.ActivityPreviewBinding
+import shop.youthnic.scan.util.Ui
 
 class PreviewActivity : AppCompatActivity() {
 
@@ -31,9 +32,11 @@ class PreviewActivity : AppCompatActivity() {
         val sc = binding.previewScannerLayout
         sc.btnBack.visibility = View.GONE
         sc.tvScannerChannelName.text = "Flipkart PPMP (Preview Mode)"
-        sc.viewChannelColor.setBackgroundColor(Color.parseColor("#126B4E"))
-        sc.tvProgressScanned.text = "Scanned: 142"
+        Ui.tint(sc.viewChannelColor, Color.parseColor("#126B4E"))
+        sc.tvProgressScanned.text = "142 scanned today"
         sc.tvProgressPending.text = "68 pending"
+        sc.tvPendingBadge.text = "68"
+        sc.tvPendingBadge.visibility = View.VISIBLE
         sc.progressBarScans.progress = 67
 
         binding.btnStateIdle.setOnClickListener { showIdleState() }
@@ -52,7 +55,7 @@ class PreviewActivity : AppCompatActivity() {
         sc.cardResult.visibility = View.GONE
         sc.tvConnectionStatus.text = "Online"
         sc.tvConnectionStatus.setTextColor(ContextCompat.getColor(this, R.color.verdict_ok))
-        sc.tvConnectionStatus.setBackgroundColor(ContextCompat.getColor(this, R.color.verdict_ok_bg))
+        Ui.tint(sc.tvConnectionStatus, ContextCompat.getColor(this, R.color.verdict_ok_bg))
     }
 
     private fun showOkState() {
@@ -80,7 +83,7 @@ class PreviewActivity : AppCompatActivity() {
 
         sc.tvConnectionStatus.text = "Online"
         sc.tvConnectionStatus.setTextColor(green)
-        sc.tvConnectionStatus.setBackgroundColor(ContextCompat.getColor(this, R.color.verdict_ok_bg))
+        Ui.tint(sc.tvConnectionStatus, ContextCompat.getColor(this, R.color.verdict_ok_bg))
     }
 
     private fun showCheckState() {
@@ -165,6 +168,6 @@ class PreviewActivity : AppCompatActivity() {
 
         sc.tvConnectionStatus.text = "Offline"
         sc.tvConnectionStatus.setTextColor(red)
-        sc.tvConnectionStatus.setBackgroundColor(ContextCompat.getColor(this, R.color.verdict_stop_bg))
+        Ui.tint(sc.tvConnectionStatus, ContextCompat.getColor(this, R.color.verdict_stop_bg))
     }
 }

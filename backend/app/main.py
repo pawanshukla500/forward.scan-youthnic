@@ -17,7 +17,7 @@ from .config import ROOT_DIR, settings
 from .db import Base, SessionLocal, drop_retired_indexes, engine, ensure_columns, optimize, session_scope
 from .models import User
 from .oms import sync as sync_module
-from .routers import admin, auth, manifests, reconcile, reports, scan
+from .routers import admin, auth, manifests, mobile_app, reconcile, reports, scan
 from .security import hash_password, password_problem, websocket_user
 from .services import backup
 from .services.realtime import hub
@@ -126,7 +126,7 @@ if settings.cors_origins:
         allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
     )
 
-for r in (auth.router, scan.router, reports.router, reconcile.router, manifests.router, admin.router):
+for r in (auth.router, scan.router, reports.router, reconcile.router, manifests.router, admin.router, mobile_app.router):
     app.include_router(r)
 
 

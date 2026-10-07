@@ -13,6 +13,7 @@ import shop.youthnic.scan.BuildConfig
 import shop.youthnic.scan.ForwardScanApp
 import shop.youthnic.scan.R
 import shop.youthnic.scan.databinding.ActivitySettingsBinding
+import shop.youthnic.scan.update.AppUpdater
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -49,6 +50,15 @@ class SettingsActivity : AppCompatActivity() {
 
         binding.tvSettingsVersion.text = "Forward Scan v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
 
+        binding.tvInstalledVersion.text = getString(R.string.installed_version_format, BuildConfig.VERSION_NAME)
+        val known = AppUpdater.available
+        binding.tvUpdateStatus.text = if (known != null) {
+            getString(R.string.update_available_format, known.versionName)
+        } else {
+            getString(R.string.update_status_idle)
+        }
+        binding.btnCheckUpdates.setOnClickListener { checkForUpdates() }
+
         if (BuildConfig.DEBUG) {
             binding.btnPreviewMode.visibility = View.VISIBLE
             binding.btnPreviewMode.setOnClickListener {
@@ -77,6 +87,27 @@ class SettingsActivity : AppCompatActivity() {
                 .setNegativeButton("Cancel", null)
                 .show()
         }
+    }
+
+    private fun checkForUpdates() {
+        binding.btnCheckUpdates.isEnabled = false
+        binding.tvUpdateStatus.text = getString(R.string.update_checking)
+        lifecycleScope.launch {
+            val result = AppUpdater.check(this@SettingsActivity, force = true)
+            binding.btnCheckUpdates.isEnabled = true
+            val release = result.getOrNull()
+            binding.tvUpdateStatus.text = when {
+                result.isFailure -> getString(R.string.update_check_failed)
+                release == null -> getString(R.string.update_up_to_date)
+                else -> getString(R.string.update_available_format, release.versionName)
+            }
+            if (release != null) AppUpdater.showUpdateDialog(this@SettingsActivity, release, always = true)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppUpdater.resumePendingInstall(this)
     }
 
     private fun savePreferences() {

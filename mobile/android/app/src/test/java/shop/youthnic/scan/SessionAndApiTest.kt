@@ -54,7 +54,8 @@ class SessionAndApiTest {
     fun testPasswordChangeValidationRules() {
         fun validatePasswordChange(current: String, newP: String, confirm: String): String? {
             if (current.isBlank() || newP.isBlank() || confirm.isBlank()) return "All fields required"
-            if (newP.length < 6) return "Too short"
+            // same rule as the server (security.password_problem): 8+ characters with a letter and a digit
+            if (newP.length < 8 || newP.none { it.isLetter() } || newP.none { it.isDigit() }) return "Too short"
             if (newP == current) return "Cannot be same"
             if (newP != confirm) return "Mismatch"
             return null
@@ -62,6 +63,8 @@ class SessionAndApiTest {
 
         assertEquals("All fields required", validatePasswordChange("", "newPass1", "newPass1"))
         assertEquals("Too short", validatePasswordChange("currPass1", "short", "short"))
+        assertEquals("Too short", validatePasswordChange("currPass1", "onlyletters", "onlyletters"))
+        assertEquals("Too short", validatePasswordChange("currPass1", "12345678", "12345678"))
         assertEquals("Cannot be same", validatePasswordChange("samePass1", "samePass1", "samePass1"))
         assertEquals("Mismatch", validatePasswordChange("currPass1", "newPass12", "newPass99"))
         assertEquals(null, validatePasswordChange("currPass1", "newPass12", "newPass12"))

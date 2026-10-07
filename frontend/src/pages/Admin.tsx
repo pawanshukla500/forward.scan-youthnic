@@ -4,11 +4,16 @@ import {
   ChevronRight,
   CircleAlert,
   ClipboardList,
+  Copy,
   Database,
+  Download,
+  ExternalLink,
   KeyRound,
   Pencil,
   Plus,
+  QrCode,
   RefreshCw,
+  Smartphone,
   Store,
   UserCheck,
   Users as UsersIcon,
@@ -277,6 +282,8 @@ function Overview({ notify, go }: { notify: Notify; go: (t: Tab) => void }) {
         )}
       </div>
 
+      <MobileAppCard notify={notify} />
+
       <div ref={usersRef} className="scroll-mt-24">
         <Users notify={notify} />
       </div>
@@ -315,6 +322,105 @@ function Overview({ notify, go }: { notify: Notify; go: (t: Tab) => void }) {
         </div>
       </section>
     </div>
+  );
+}
+
+/* ---- Android app: public download link + QR (served by routers/mobile_app.py) ------------------ */
+
+interface AppRelease {
+  available: boolean;
+  version_code?: number;
+  version_name?: string;
+  notes?: string;
+  size?: number;
+  published_at?: string;
+  min_version_code?: number;
+  download_url?: string;
+  page_url: string;
+  qr_url: string;
+}
+
+function MobileAppCard({ notify }: { notify: Notify }) {
+  const [r, setR] = useState<AppRelease | null>(null);
+  useEffect(() => {
+    api<AppRelease>("/api/app/latest").then(setR).catch(() => setR(null));
+  }, []);
+  if (!r) return null;
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(r!.page_url);
+      notify("ok", "Download link copied - paste it in WhatsApp or anywhere");
+    } catch {
+      notify("err", `Copy failed - the link is ${r!.page_url}`);
+    }
+  }
+
+  const published = r.published_at ? new Date(r.published_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : null;
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
+        <Smartphone className="size-5 text-accent-ink" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold">Android app</h2>
+          <p className="text-xs text-muted">Anyone can scan the QR or open the link to install the scanner app - no sign-in needed to download.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" onClick={() => void copyLink()}>
+            <Copy className="size-4" aria-hidden /> Copy link
+          </Button>
+          <a href={r.page_url} target="_blank" rel="noreferrer" className="ease-ui inline-flex h-9 items-center gap-2 rounded-lg border border-line-strong bg-surface px-3 text-sm font-medium text-ink hover:bg-surface-2">
+            <ExternalLink className="size-4" aria-hidden /> Open page
+          </a>
+        </div>
+      </div>
+      <div className="flex flex-col gap-4 px-4 py-4 sm:flex-row sm:items-start">
+        <a href={r.qr_url} target="_blank" rel="noreferrer" title="Open the QR code on its own (to print it)" className="shrink-0 self-center sm:self-start">
+          <img src={r.qr_url} alt={`QR code for ${r.page_url}`} width={168} height={168} className="size-[168px] rounded-lg border border-line bg-white" />
+        </a>
+        <div className="min-w-0 flex-1 space-y-3 text-sm">
+          <div>
+            <div className="text-xs text-muted">Public download link</div>
+            <div className="break-all font-mono text-sm font-semibold">{r.page_url}</div>
+          </div>
+          {r.available ? (
+            <>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <div className="text-xs text-muted">Latest version</div>
+                  <div className="font-semibold">
+                    {r.version_name} <span className="text-xs font-normal text-muted">({r.version_code})</span>
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted">Published</div>
+                  <div className="font-semibold">{published ?? "-"}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted">Size</div>
+                  <div className="font-semibold">{r.size ? `${(r.size / 1048576).toFixed(1)} MB` : "-"}</div>
+                </div>
+              </div>
+              {r.notes && <p className="whitespace-pre-line text-xs text-muted">What is new: {r.notes}</p>}
+              <div className="flex flex-wrap items-center gap-2">
+                <a href={r.download_url} className="ease-ui inline-flex h-9 items-center gap-2 rounded-lg bg-accent px-3 text-sm font-semibold text-on-accent hover:bg-accent-hover">
+                  <Download className="size-4" aria-hidden /> Download APK
+                </a>
+                <span className="text-xs text-muted">
+                  <QrCode className="mr-1 inline size-3.5 align-[-2px]" aria-hidden />
+                  Installed phones are told about new versions automatically and update from inside the app.
+                </span>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-warn-ink">
+              No app has been published to this server yet. On GitHub run Actions &rarr; <b>Build Android APK</b> (it also runs by itself when the app
+              code changes) - it uploads the APK here and this card shows the version.
+            </p>
+          )}
+        </div>
+      </div>
+    </Card>
   );
 }
 

@@ -1,14 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- One marketplace on the picker: colour bar | name, scans today, today's progress | pending count. -->
 <com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:layout_marginBottom="10dp"
     android:clickable="true"
     android:focusable="true"
     app:cardBackgroundColor="@color/surface"
-    app:cardCornerRadius="10dp"
-    app:cardElevation="1dp"
+    app:cardCornerRadius="12dp"
+    app:cardElevation="0dp"
+    app:rippleColor="@color/brand_soft"
     app:strokeColor="@color/border"
     app:strokeWidth="1dp">
 
@@ -16,16 +19,19 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center_vertical"
-        android:minHeight="68dp"
+        android:minHeight="76dp"
         android:orientation="horizontal"
-        android:padding="14dp">
+        android:paddingStart="12dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="12dp">
 
         <View
             android:id="@+id/viewColorMarker"
-            android:layout_width="6dp"
-            android:layout_height="40dp"
+            android:layout_width="5dp"
+            android:layout_height="44dp"
             android:layout_marginEnd="12dp"
-            android:background="@drawable/splash"
+            android:background="@drawable/bg_marker"
             android:backgroundTint="@color/colorPrimary" />
 
         <LinearLayout
@@ -36,37 +42,93 @@
 
             <TextView
                 android:id="@+id/tvChannelName"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:ellipsize="end"
-                android:maxLines="1"
-                android:text="Channel Name"
+                android:maxLines="2"
                 android:textColor="@color/text_primary"
                 android:textSize="16sp"
-                android:textStyle="bold" />
+                android:textStyle="bold"
+                tools:text="Tulip Prints - Meesho" />
 
             <TextView
                 android:id="@+id/tvChannelSubtitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp"
+                tools:text="Meesho · 4 scanned today" />
+
+            <TextView
+                android:id="@+id/tvChannelOverdue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textColor="@color/verdict_stop"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:visibility="gone"
+                tools:text="12 overdue from earlier days"
+                tools:visibility="visible" />
+
+            <ProgressBar
+                android:id="@+id/progressChannelToday"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="4dp"
+                android:layout_marginTop="8dp"
+                android:layout_marginEnd="8dp"
+                android:max="100"
+                android:progressBackgroundTint="@color/progress_track"
+                android:progressTint="@color/colorPrimary"
+                android:visibility="gone"
+                tools:progress="40"
+                tools:visibility="visible" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:gravity="center_horizontal"
+            android:minWidth="64dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tvPendingCount"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_pill"
+                android:backgroundTint="@color/verdict_check_bg"
+                android:gravity="center"
+                android:minWidth="44dp"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="3dp"
+                android:textColor="@color/verdict_check"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                tools:text="186" />
+
+            <TextView
+                android:id="@+id/tvPendingLabel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="3dp"
-                android:text="Marketplace • 0 scanned today"
+                android:text="@string/pending_label"
                 android:textColor="@color/text_secondary"
-                android:textSize="13sp" />
+                android:textSize="11sp" />
         </LinearLayout>
 
-        <TextView
-            android:id="@+id/tvPendingBadge"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/splash"
-            android:backgroundTint="@color/background"
-            android:paddingHorizontal="10dp"
-            android:paddingVertical="5dp"
-            android:text="0 pending"
-            android:textColor="@color/text_secondary"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+        <ImageView
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:layout_marginStart="2dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/ic_chevron_right"
+            app:tint="@color/text_muted" />
 
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

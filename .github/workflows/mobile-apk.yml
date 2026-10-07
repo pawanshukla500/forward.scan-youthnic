@@ -3,9 +3,20 @@ name: Build Android APK
 # Production Android application for warehouse phones:
 # Native Android Kotlin app with CameraX, ML Kit barcode scanning, Android KeyStore
 # encryption, and R8 shrinking for ~2 GB RAM phones (package: shop.youthnic.scan).
-# Preserves legacy Capacitor workflow for parity verification.
+#
+# Runs by itself when the app code changes on main, and by hand (Actions -> Build Android APK -> Run workflow).
+# Every published build is copied to the server (data/app on the VPS, kept across deploys):
+#   - https://scan.youthnic.shop/download   public download page + QR (also shown in Admin)
+#   - /api/app/latest                        installed apps compare versions and offer the update
+# Preserves the legacy Capacitor workflow for parity verification.
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "mobile/android/**"
+      - ".github/workflows/mobile-apk.yml"
   workflow_dispatch:
     inputs:
       build_engine:
@@ -24,13 +35,26 @@ on:
         required: true
         default: "forward-scan-app"
       publish:
-        description: "Publish to the GitHub Release (off = build-only check, APK kept as a run artifact)"
+        description: "Publish (server download page + in-app update + GitHub Release). Off = build-only check, APK kept as a run artifact"
         type: boolean
         required: false
         default: true
+      notes:
+        description: "What is new (shown in the update notification and on the download page). Empty = the commit title"
+        required: false
+        default: ""
+      force_update:
+        description: "Required update: older apps must install this version before scanning again"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
+
+concurrency:
+  group: mobile-apk-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   native-apk:
@@ -83,7 +107,7 @@ jobs:
 
       - name: Assemble Release APK (R8 & Resource Shrink)
         env:
-          API_URL: ${{ inputs.api_url }}
+          API_URL: ${{ inputs.api_url || 'https://scan.youthnic.shop' }}
         run: ./gradlew assembleRelease --no-daemon
 
       - name: Find Release APK
@@ -165,28 +189,71 @@ jobs:
           path: mobile/android/${{ env.RELEASE_APK }}
           if-no-files-found: error
 
+      # The server serves data/app/forward-scan-app.apk + latest.json (backend/app/routers/mobile_app.py):
+      # the public download page / QR, and the version the installed apps compare against.
+      - name: Write version file for the server
+        if: ${{ github.event_name == 'push' || inputs.publish }}
+        env:
+          RELEASE_NOTES: ${{ inputs.notes || github.event.head_commit.message || '' }}
+          FORCE_UPDATE: ${{ inputs.force_update && 'true' || 'false' }}
+          GIT_SHA: ${{ github.sha }}
+        run: python3 ../../.github/scripts/app_release_meta.py "$RELEASE_APK" "$APP_VCODE" /tmp/latest.json
+
+      - name: Publish APK to the server (download page, QR, in-app updates)
+        if: ${{ github.event_name == 'push' || inputs.publish }}
+        env:
+          HOSTINGER_SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+          HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST || '200.141.1.119' }}
+          HOSTINGER_USER: ${{ secrets.HOSTINGER_USER || 'root' }}
+          HOSTINGER_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          APP_DOMAIN: ${{ vars.APP_DOMAIN || 'scan.youthnic.shop' }}
+        run: |
+          if [ -z "$HOSTINGER_SSH_KEY" ]; then
+            echo "::warning::HOSTINGER_SSH_KEY is not set - the APK was NOT copied to the server (no in-app update)."
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$HOSTINGER_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          for i in 1 2 3 4 5; do
+            ssh-keyscan -p "$HOSTINGER_PORT" "$HOSTINGER_HOST" >> ~/.ssh/known_hosts 2>/dev/null && break || sleep 2
+          done
+          SSH="ssh -p $HOSTINGER_PORT -i $HOME/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes"
+          SCP="scp -P $HOSTINGER_PORT -i $HOME/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes"
+          # mounted in the container as /app/data/app (APP_RELEASE_DIR); deploy.yml keeps data/ across deploys
+          DEST=/opt/forward-scan/Forward-Scan/data/app
+          $SSH "$HOSTINGER_USER@$HOSTINGER_HOST" "mkdir -p $DEST"
+          $SCP "$RELEASE_APK" "$HOSTINGER_USER@$HOSTINGER_HOST:$DEST/.forward-scan-app.apk.uploading"
+          $SCP /tmp/latest.json "$HOSTINGER_USER@$HOSTINGER_HOST:$DEST/.latest.json.uploading"
+          # APK first, then the version file: a phone never sees a version whose APK is not there yet
+          $SSH "$HOSTINGER_USER@$HOSTINGER_HOST" "cd $DEST && mv -f .forward-scan-app.apk.uploading forward-scan-app.apk && mv -f .latest.json.uploading latest.json && ls -la $DEST"
+          echo "Published version code $APP_VCODE - download page: https://$APP_DOMAIN/download"
+          curl -fsS "https://$APP_DOMAIN/api/app/latest" || echo "::warning::The server did not answer /api/app/latest (it serves the app once a deploy with routers/mobile_app.py is live)"
+
       - name: Prepare APK for Release
-        if: ${{ inputs.publish }}
+        if: ${{ github.event_name == 'push' || inputs.publish }}
         run: cp "$RELEASE_APK" app/build/outputs/apk/release/forward-scan-app.apk
 
       - name: Publish GitHub Release
-        if: ${{ inputs.publish }}
+        if: ${{ github.event_name == 'push' || inputs.publish }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.release_tag }}
-          name: Forward Scan Native App (${{ inputs.release_tag }})
+          tag_name: ${{ inputs.release_tag || 'forward-scan-app' }}
+          name: Forward Scan Native App (${{ inputs.release_tag || 'forward-scan-app' }})
           body: |
             Native Android warehouse application (Kotlin, CameraX, ML Kit).
             Package: shop.youthnic.scan
             Version: 1.0.${{ github.run_number }} (code: ${{ env.APP_VCODE }})
-            Built from commit ${{ github.sha }} against ${{ inputs.api_url }}.
+            Built from commit ${{ github.sha }} against ${{ inputs.api_url || 'https://scan.youthnic.shop' }}.
+            Phones install it from https://scan.youthnic.shop/download (QR code in Admin) and get later versions as in-app updates.
 
             Features:
             - Native CameraX always-on barcode scanner
             - ML Kit 1-D barcode recognition (Code128, Code39, EAN, ITF)
+            - Pending list per marketplace on the scan screen
+            - Update notification and in-app install of new versions
             - 90-day mobile device session refresh with Android KeyStore encryption
             - Fast, lightweight design optimized for ~2 GB RAM devices
-            - Smooth update installation over existing warehouse phones
           prerelease: true
           make_latest: true
           files: mobile/android/app/build/outputs/apk/release/forward-scan-app.apk

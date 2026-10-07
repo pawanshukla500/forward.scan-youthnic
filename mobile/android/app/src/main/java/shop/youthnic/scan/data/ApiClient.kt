@@ -259,4 +259,40 @@ class ApiClient(private val sessionManager: SessionManager) {
             }
         )
     }
+
+    /** Today's numbers + the most urgent unscanned AWBs for one marketplace (scan screen header and Pending sheet). */
+    fun getScanContext(channelId: Int, limit: Int = 50): Result<ScanContext> {
+        return executeWithAutoRefresh(
+            requestFactory = {
+                newRequestBuilder("/api/scan-context?channel_id=$channelId&limit=${limit.coerceIn(1, 50)}").get().build()
+            },
+            parser = { body -> ScanContext.fromJson(JSONObject(body)) }
+        )
+    }
+
+    /**
+     * Newest app build on the server. Public (no sign-in) so it also works from the background update check.
+     * Success with null = nothing published yet.
+     */
+    fun getLatestRelease(): Result<AppRelease?> {
+        val request = Request.Builder()
+            .url("${baseUrl()}/api/app/latest")
+            .header("Accept", "application/json")
+            .get()
+            .build()
+        return try {
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    Result.failure(ApiException(response.code, parseErrorMessage(body, response.code)))
+                } else {
+                    Result.success(AppRelease.fromJson(JSONObject(body)))
+                }
+            }
+        } catch (e: IOException) {
+            Result.failure(NetworkException("No connection to server"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

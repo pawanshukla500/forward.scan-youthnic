@@ -55,8 +55,14 @@ data class Channel(
     val scanEnabled: Boolean,
     val sortOrder: Int,
     val todayScans: Int,
-    val pendingScans: Int
+    val pendingScans: Int,
+    /** Today's AWBs (same numbers as the web picker and the scan screen); null on an older server. */
+    val awbToday: AwbCounts? = null
 ) {
+    /** What the picker shows as pending: today's unscanned AWBs plus overdue ones from earlier days. */
+    val pendingTotal: Int
+        get() = awbToday?.let { it.pending + it.overdue } ?: pendingScans
+
     companion object {
         fun fromJson(json: JSONObject): Channel {
             return Channel(
@@ -68,7 +74,131 @@ data class Channel(
                 scanEnabled = json.optBoolean("scan_enabled", true),
                 sortOrder = json.optInt("sort_order", 100),
                 todayScans = json.optInt("today", 0),
-                pendingScans = json.optInt("pending", 0)
+                pendingScans = json.optInt("pending", 0),
+                awbToday = json.optJSONObject("awb_today")?.let { AwbCounts.fromJson(it) }
+            )
+        }
+    }
+}
+
+/** AWBs generated today for one marketplace (server: reconcile buckets) + overdue ones from earlier days. */
+data class AwbCounts(
+    val generated: Int,
+    val scanned: Int,
+    val pending: Int,
+    val overdue: Int,
+    val cancelled: Int,
+    /** % of today's (non-cancelled) AWBs scanned; null when no AWB was generated today. */
+    val pct: Int?
+) {
+    companion object {
+        fun fromJson(json: JSONObject): AwbCounts {
+            return AwbCounts(
+                generated = json.optInt("generated", 0),
+                scanned = json.optInt("scanned", 0),
+                pending = json.optInt("pending", 0),
+                overdue = json.optInt("overdue", 0),
+                cancelled = json.optInt("cancelled", 0),
+                pct = if (json.isNull("pct") || !json.has("pct")) null else json.optInt("pct", 0)
+            )
+        }
+    }
+}
+
+/** One AWB still waiting to be scanned (server: /api/scan-context "queue"). */
+data class PendingAwb(
+    val awb: String,
+    val orderId: String,
+    val courier: String,
+    val skus: Int,
+    val units: Int,
+    val slaDate: String,
+    val awbGeneratedAt: String,
+    val ageDays: Int,
+    val priority: String
+) {
+    companion object {
+        fun fromJson(json: JSONObject): PendingAwb {
+            return PendingAwb(
+                awb = json.optString("awb", ""),
+                orderId = json.optString("order_id", ""),
+                courier = json.optString("courier", ""),
+                skus = json.optInt("skus", 0),
+                units = json.optInt("units", 0),
+                slaDate = if (json.isNull("sla_date")) "" else json.optString("sla_date", ""),
+                awbGeneratedAt = if (json.isNull("awb_generated_at")) "" else json.optString("awb_generated_at", ""),
+                ageDays = json.optInt("age_days", 0),
+                priority = json.optString("priority", "Normal")
+            )
+        }
+    }
+}
+
+/** Everything the scan screen shows besides the scan itself (server: GET /api/scan-context). */
+data class ScanContext(
+    val scannedToday: Int,
+    val awb: AwbCounts,
+    val queue: List<PendingAwb>,
+    val queueTotal: Int
+) {
+    /** Unscanned AWBs: today's pending + overdue (the same number the Pending list counts). */
+    val pendingTotal: Int
+        get() = queueTotal
+
+    companion object {
+        fun fromJson(json: JSONObject): ScanContext {
+            val stats = json.optJSONObject("stats") ?: JSONObject()
+            val awb = AwbCounts.fromJson(json.optJSONObject("awb") ?: JSONObject())
+            val arr = json.optJSONArray("queue") ?: JSONArray()
+            val queue = mutableListOf<PendingAwb>()
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let { queue.add(PendingAwb.fromJson(it)) }
+            }
+            return ScanContext(
+                scannedToday = stats.optInt("scanned", 0),
+                awb = awb,
+                queue = queue,
+                queueTotal = json.optInt("queue_total", awb.pending + awb.overdue)
+            )
+        }
+    }
+}
+
+/** The newest app build published on the server (GET /api/app/latest). */
+data class AppRelease(
+    val versionCode: Int,
+    val versionName: String,
+    val notes: String,
+    val sizeBytes: Long,
+    val sha256: String,
+    val publishedAt: String,
+    val minVersionCode: Int,
+    val downloadUrl: String,
+    val pageUrl: String
+) {
+    fun isNewerThan(installedVersionCode: Int): Boolean = versionCode > installedVersionCode
+
+    /** The server says versions below minVersionCode must update before scanning again. */
+    fun isRequiredFor(installedVersionCode: Int): Boolean =
+        isNewerThan(installedVersionCode) && installedVersionCode < minVersionCode
+
+    companion object {
+        /** null when nothing is published yet (or the answer is unusable). */
+        fun fromJson(json: JSONObject): AppRelease? {
+            if (!json.optBoolean("available", false)) return null
+            val code = json.optInt("version_code", 0)
+            val url = json.optString("download_url", "")
+            if (code <= 0 || url.isBlank()) return null
+            return AppRelease(
+                versionCode = code,
+                versionName = json.optString("version_name", code.toString()),
+                notes = json.optString("notes", ""),
+                sizeBytes = json.optLong("size", 0L),
+                sha256 = json.optString("sha256", ""),
+                publishedAt = json.optString("published_at", ""),
+                minVersionCode = json.optInt("min_version_code", 0),
+                downloadUrl = url,
+                pageUrl = json.optString("page_url", url)
             )
         }
     }
@@ -134,7 +264,9 @@ data class ScanDetails(
     val flags: List<String>,
     val message: String,
     val alert: String,
-    val scannedAtLocal: String
+    val scannedAtLocal: String,
+    val user: String = "",
+    val station: String = ""
 ) {
     companion object {
         fun fromJson(json: JSONObject): ScanDetails {
@@ -158,7 +290,9 @@ data class ScanDetails(
                 flags = flagsList,
                 message = json.optString("message", ""),
                 alert = json.optString("alert", ""),
-                scannedAtLocal = json.optString("scanned_at_local", "")
+                scannedAtLocal = json.optString("scanned_at_local", ""),
+                user = json.optString("user", ""),
+                station = json.optString("station", "")
             )
         }
     }

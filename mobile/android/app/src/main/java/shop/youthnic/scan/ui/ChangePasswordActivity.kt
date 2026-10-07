@@ -35,7 +35,7 @@ class ChangePasswordActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
-            if (newPassword.length < 6) {
+            if (newPassword.length < 8 || newPassword.none { it.isLetter() } || newPassword.none { it.isDigit() }) {
                 showError(getString(R.string.error_password_too_short))
                 return@setOnClickListener
             }

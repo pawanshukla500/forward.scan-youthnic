@@ -23,10 +23,13 @@
     <string name="camera_permission_needed">Camera permission is required to scan shipping labels</string>
     <string name="aim_at_awb">Aim at 1-D AWB barcode</string>
     <string name="preparing_scanner">Preparing scanner…</string>
-    <string name="torch_on">Torch On</string>
-    <string name="torch_off">Torch Off</string>
+    <string name="torch_on">Torch on</string>
+    <string name="torch_off">Torch</string>
     <string name="manual_entry">Manual</string>
-    <string name="recent_scans">Recent Scans</string>
+    <string name="recent_scans">Recent scans</string>
+    <string name="recent_short">Recent</string>
+    <string name="recent_scans_sub">Today on this marketplace, newest first</string>
+    <string name="recent_empty">No scans yet today on this marketplace</string>
     <string name="connection_online">Online</string>
     <string name="connection_offline">No connection — scan not submitted</string>
     <string name="connection_checking">Checking…</string>
@@ -55,12 +58,104 @@
     <string name="change_password_title">Change Password</string>
     <string name="change_password_instruction">Your account requires a new password before you can proceed to scanning.</string>
     <string name="current_password_hint">Current password</string>
-    <string name="new_password_hint">New password (min 6 characters)</string>
+    <string name="new_password_hint">New password (8+ characters, letters and a number)</string>
     <string name="confirm_new_password_hint">Confirm new password</string>
     <string name="update_password_button">Update Password &amp; Continue</string>
     <string name="updating_password">Updating password…</string>
     <string name="error_password_mismatch">New passwords do not match</string>
-    <string name="error_password_too_short">New password must be at least 6 characters</string>
+    <string name="error_password_too_short">New password must be at least 8 characters with a letter and a number</string>
     <string name="error_password_same">New password must be different from current password</string>
     <string name="error_all_fields_required">All password fields are required</string>
+    <!-- Common -->
+    <string name="refresh">Refresh</string>
+    <string name="close">Close</string>
+    <string name="change_marketplace">Change marketplace</string>
+    <string name="last_used_marketplace">LAST USED MARKETPLACE</string>
+    <string name="pending_label">pending</string>
+    <string name="pending_label_title">Pending</string>
+    <string name="all_done">Done</string>
+    <string name="total_pending_format">%1$s pending in total</string>
+    <string name="overdue_format">%1$s overdue from earlier days</string>
+
+    <!-- Scanner result -->
+    <string name="label_awb">AWB NUMBER</string>
+    <string name="label_order_id">ORDER ID</string>
+    <string name="label_courier">COURIER</string>
+    <string name="label_items">ITEMS</string>
+    <string name="ready_to_scan">READY TO SCAN</string>
+    <string name="ready_to_scan_hint">Point the camera at the 1-D barcode on the shipping label.\nVerification happens instantly.</string>
+
+    <!-- Pending sheet -->
+    <string name="pending_sheet_title">Pending to scan</string>
+    <string name="sum_today_pending">Pending today</string>
+    <string name="sum_overdue">Overdue</string>
+    <string name="sum_scanned">Scanned today</string>
+    <string name="pending_none">Nothing pending - every AWB on this marketplace is scanned</string>
+    <string name="pending_load_failed">Could not load the pending list. Check the connection and tap refresh.</string>
+
+    <!-- App updates -->
+    <string name="app_updates">App updates</string>
+    <string name="check_for_updates">Check for updates</string>
+    <string name="update_now">Update</string>
+    <string name="update_banner_sub">Tap to download and install - you stay signed in</string>
+    <string name="update_starting">Starting download…</string>
+    <string name="update_channel_name">App updates</string>
+    <string name="update_channel_desc">Tells you when a new version of Forward Scan is ready to install</string>
+    <!-- Scanner header / Pending -->
+    <string name="scanned_today_format">%1$s scanned today</string>
+    <string name="today_scans_format_s">%1$s scanned today</string>
+    <string name="pending_count_format">%1$s pending</string>
+    <string name="all_scanned">All scanned</string>
+    <string name="connection_offline_short">Offline</string>
+    <string name="verdict_offline">OFFLINE</string>
+    <string name="not_submitted">Not submitted</string>
+    <string name="check_connection_rescan">Check the connection and scan again</string>
+    <string name="pending_footer_format">Showing the %1$d most urgent of %2$s</string>
+    <string name="priority_urgent">Urgent</string>
+    <string name="priority_high">Ship soon</string>
+    <string name="priority_normal">Today</string>
+    <string name="order_prefix">Order %1$s</string>
+    <string name="ship_by_format">Ship by %1$s</string>
+    <string name="awb_generated_format">AWB generated %1$s</string>
+    <plurals name="overdue_days">
+        <item quantity="one">AWB from %1$s · %2$d day late</item>
+        <item quantity="other">AWB from %1$s · %2$d days late</item>
+    </plurals>
+    <string name="recent_load_failed">Could not load recent scans. Check the connection.</string>
+    <string name="result_ok">OK</string>
+    <string name="result_check">Check</string>
+    <string name="result_unverified">Not in OMS</string>
+
+    <!-- App updates (AppUpdater) -->
+    <string name="later">Later</string>
+    <string name="update_banner_title">Update available - version %1$s</string>
+    <string name="update_scanner_banner">Update %1$s available - tap to install</string>
+    <string name="update_notification_title">Forward Scan update available</string>
+    <string name="update_notification_text">Version %1$s is ready - tap to install</string>
+    <string name="update_dialog_title">Update available</string>
+    <string name="update_required_title">Update required</string>
+    <string name="update_dialog_message">Forward Scan %1$s is ready (you have %2$s).</string>
+    <string name="update_required_message">This version is needed to keep scanning.</string>
+    <string name="update_whats_new">What is new:</string>
+    <string name="update_install">Update now</string>
+    <string name="update_download_title">Forward Scan %1$s</string>
+    <string name="update_downloading_title">Downloading version %1$s</string>
+    <string name="update_hide">Hide</string>
+    <string name="update_progress_format">%1$d%% · %2$s of %3$s</string>
+    <string name="update_waiting">Waiting for the download to start…</string>
+    <string name="update_failed_title">Download failed</string>
+    <string name="update_failed_message">The update could not be downloaded. Check the internet connection and try again, or download it in the browser.</string>
+    <string name="update_damaged_message">The downloaded file was damaged. Please try again.</string>
+    <string name="update_try_again">Try again</string>
+    <string name="update_open_browser">Open in browser</string>
+    <string name="update_permission_title">Allow app updates</string>
+    <string name="update_permission_message">Android asks this once: turn on \"Allow from this source\" for Forward Scan, then come back here to finish the update.</string>
+    <string name="update_open_settings">Open settings</string>
+    <string name="update_install_failed">Could not open the installer</string>
+    <string name="installed_version_format">Installed: version %1$s</string>
+    <string name="update_status_idle">Updates are checked automatically</string>
+    <string name="update_checking">Checking…</string>
+    <string name="update_up_to_date">You have the latest version</string>
+    <string name="update_available_format">Version %1$s is available</string>
+    <string name="update_check_failed">Could not reach the server - try again</string>
 </resources>
