@@ -23,7 +23,6 @@ class LoginActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         val app = application as ForwardScanApp
-        val sessionManager = app.sessionManager
         val apiClient = app.apiClient
 
         binding.tvVersionInfo.text = "Forward Scan v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"

@@ -6,7 +6,6 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
 import android.util.Size
-import android.view.LayoutInflater
 import android.view.View
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -325,7 +324,6 @@ class ScannerActivity : AppCompatActivity() {
             binding.tvResultItemsCount.text = "${order.itemCount} SKU (${order.totalQty} Units)"
 
             binding.layoutItemsList.removeAllViews()
-            val inflater = LayoutInflater.from(this)
             for (item in order.items.take(4)) {
                 val tvItem = TextView(this).apply {
                     text = "• ${item.sku} (x${item.qty}) ${item.title.take(35)}"

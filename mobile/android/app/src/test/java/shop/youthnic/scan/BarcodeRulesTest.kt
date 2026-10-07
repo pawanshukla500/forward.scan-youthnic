@@ -75,11 +75,11 @@ class BarcodeRulesTest {
         // Rescanned immediately (500ms later): suppressed
         assertFalse(guard.shouldProcess(awb, t0 + 500))
 
-        // Rescanned 3 seconds later: still suppressed (< 8000ms)
+        // Rescanned 3 seconds later: still suppressed (< 8000ms from last check)
         assertFalse(guard.shouldProcess(awb, t0 + 3000))
 
-        // Rescanned 8.5 seconds later: allowed
-        assertTrue(guard.shouldProcess(awb, t0 + 8500))
+        // Rescanned 8.5 seconds after last check (t0 + 3000 + 8500 = t0 + 11500): allowed
+        assertTrue(guard.shouldProcess(awb, t0 + 11500))
     }
 
     @Test
