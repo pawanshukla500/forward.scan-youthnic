@@ -20,6 +20,7 @@
     <string name="no_channels">No active channels found</string>
 
     <!-- Scanner -->
+    <string name="camera_permission_needed">Camera permission is required to scan shipping labels</string>
     <string name="aim_at_awb">Aim at 1-D AWB barcode</string>
     <string name="preparing_scanner">Preparing scanner…</string>
     <string name="torch_on">Torch On</string>
