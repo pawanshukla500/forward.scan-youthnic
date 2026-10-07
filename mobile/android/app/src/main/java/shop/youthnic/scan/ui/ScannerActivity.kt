@@ -2,14 +2,16 @@ package shop.youthnic.scan.ui
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.os.Bundle
 import android.util.Size
 import android.view.View
+import android.view.ViewGroup
+import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -18,28 +20,41 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
+import androidx.core.widget.ImageViewCompat
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.bottomsheet.BottomSheetBehavior
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import shop.youthnic.scan.ForwardScanApp
 import shop.youthnic.scan.R
+import shop.youthnic.scan.data.AppRelease
+import shop.youthnic.scan.data.AuthExpiredException
 import shop.youthnic.scan.data.BarcodeRules
 import shop.youthnic.scan.data.DuplicateGuard
 import shop.youthnic.scan.data.NetworkException
+import shop.youthnic.scan.data.PendingAwb
+import shop.youthnic.scan.data.ScanContext
 import shop.youthnic.scan.data.ScanDetails
 import shop.youthnic.scan.data.ScanResponse
 import shop.youthnic.scan.data.VerdictType
 import shop.youthnic.scan.databinding.ActivityScannerBinding
 import shop.youthnic.scan.databinding.DialogManualScanBinding
 import shop.youthnic.scan.databinding.DialogRecentScansBinding
+import shop.youthnic.scan.databinding.ItemPendingRowBinding
+import shop.youthnic.scan.databinding.SheetPendingBinding
+import shop.youthnic.scan.update.AppUpdater
+import shop.youthnic.scan.util.Ui
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -60,13 +75,20 @@ class ScannerActivity : AppCompatActivity() {
     private val duplicateGuard = DuplicateGuard(sameCodeSuppressMs = 8000L, anyCodeCooldownMs = 2200L)
     private val isRequestInFlight = AtomicBoolean(false)
 
-    private var scannedCountToday = 0
-    private var pendingCount = 0
+    /** Latest numbers from the server (header, Pending badge and Pending sheet). */
+    private var scanContext: ScanContext? = null
+    private var periodicJob: Job? = null
+    private var refreshSoonJob: Job? = null
+    private var pendingSheet: SheetPendingBinding? = null
 
     companion object {
         const val EXTRA_CHANNEL_ID = "extra_channel_id"
         const val EXTRA_CHANNEL_NAME = "extra_channel_name"
         const val EXTRA_CHANNEL_COLOR = "extra_channel_color"
+
+        /** Header numbers and the update check refresh this often while the scanner is open. */
+        private const val REFRESH_EVERY_MS = 60_000L
+        private const val PENDING_ROWS = 50
     }
 
     private val cameraPermissionLauncher = registerForActivityResult(
@@ -106,34 +128,118 @@ class ScannerActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        startPeriodicRefresh()
+        AppUpdater.resumePendingInstall(this)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        periodicJob?.cancel()
+        periodicJob = null
+    }
+
     private fun initUi() {
         binding.tvScannerChannelName.text = channelName
-        try {
-            if (channelColor.isNotBlank()) {
-                val colorInt = Color.parseColor(channelColor)
-                binding.viewChannelColor.setBackgroundColor(colorInt)
-            }
-        } catch (_: Exception) {}
+        Ui.tint(binding.viewChannelColor, Ui.parseColor(channelColor, ContextCompat.getColor(this, R.color.colorPrimary)))
 
-        binding.btnBack.setOnClickListener {
-            finish()
-        }
+        // Camera takes about a third of the screen: big enough to aim, leaves room for the whole result card.
+        val screen = resources.displayMetrics.heightPixels
+        val camHeight = (screen * 0.34f).toInt().coerceIn(Ui.dp(this, 200), Ui.dp(this, 320))
+        binding.cameraContainer.layoutParams = binding.cameraContainer.layoutParams.apply { height = camHeight }
 
-        binding.btnTorch.setOnClickListener {
-            toggleTorch()
-        }
+        binding.tvProgressScanned.text = getString(R.string.scanned_today_format, "-")
+        binding.tvProgressPending.text = ""
 
-        binding.btnManual.setOnClickListener {
-            showManualScanDialog()
-        }
-
-        binding.btnRecent.setOnClickListener {
-            showRecentScansDialog()
-        }
+        binding.btnBack.setOnClickListener { finish() }
+        binding.btnTorch.setOnClickListener { toggleTorch() }
+        binding.btnManual.setOnClickListener { showManualScanDialog() }
+        binding.btnPending.setOnClickListener { showPendingSheet() }
+        binding.btnRecent.setOnClickListener { showRecentScansSheet() }
 
         binding.cardResult.visibility = View.GONE
         binding.cardIdleState.visibility = View.VISIBLE
     }
+
+    // ---- server numbers: header, Pending badge, update banner -----------------------------------
+
+    private fun startPeriodicRefresh() {
+        periodicJob?.cancel()
+        periodicJob = lifecycleScope.launch {
+            while (isActive) {
+                loadContext()
+                showUpdateBanner(AppUpdater.check(this@ScannerActivity).getOrNull())
+                delay(REFRESH_EVERY_MS)
+            }
+        }
+    }
+
+    /** After a scan: refresh the numbers shortly (several stations scan the same marketplace). */
+    private fun refreshSoon() {
+        refreshSoonJob?.cancel()
+        refreshSoonJob = lifecycleScope.launch {
+            delay(1200)
+            loadContext()
+        }
+    }
+
+    private suspend fun loadContext(): Boolean {
+        val api = (application as ForwardScanApp).apiClient
+        val result = withContext(Dispatchers.IO) { api.getScanContext(channelId, PENDING_ROWS) }
+        val ctx = result.getOrNull()
+        if (ctx != null) {
+            scanContext = ctx
+            setOnline(true)
+            renderCounts(ctx)
+            pendingSheet?.let { renderPendingSheet(it, ctx) }
+            return true
+        }
+        when (result.exceptionOrNull()) {
+            is NetworkException -> setOnline(false)
+            is AuthExpiredException -> goToLogin()
+        }
+        return false
+    }
+
+    private fun renderCounts(ctx: ScanContext) {
+        binding.tvProgressScanned.text = getString(R.string.scanned_today_format, Ui.count(ctx.scannedToday))
+        val pending = ctx.pendingTotal
+        if (pending > 0) {
+            binding.tvProgressPending.text = getString(R.string.pending_count_format, Ui.count(pending))
+            binding.tvProgressPending.setTextColor(ContextCompat.getColor(this, R.color.verdict_check))
+            binding.tvPendingBadge.text = if (pending > 999) "999+" else pending.toString()
+            binding.tvPendingBadge.visibility = View.VISIBLE
+        } else {
+            binding.tvProgressPending.text = getString(R.string.all_scanned)
+            binding.tvProgressPending.setTextColor(ContextCompat.getColor(this, R.color.verdict_ok))
+            binding.tvPendingBadge.visibility = View.GONE
+        }
+        binding.progressBarScans.progress = ctx.awb.pct ?: if (pending == 0 && ctx.scannedToday > 0) 100 else 0
+    }
+
+    private fun setOnline(online: Boolean) {
+        val tv = binding.tvConnectionStatus
+        if (online) {
+            tv.text = getString(R.string.connection_online)
+            Ui.pillRes(tv, R.color.verdict_ok, R.color.verdict_ok_bg)
+        } else {
+            tv.text = getString(R.string.connection_offline_short)
+            Ui.pillRes(tv, R.color.verdict_stop, R.color.verdict_stop_bg)
+        }
+    }
+
+    private fun showUpdateBanner(release: AppRelease?) {
+        if (release == null) {
+            binding.tvUpdateBanner.visibility = View.GONE
+            return
+        }
+        binding.tvUpdateBanner.text = getString(R.string.update_scanner_banner, release.versionName)
+        binding.tvUpdateBanner.visibility = View.VISIBLE
+        binding.tvUpdateBanner.setOnClickListener { AppUpdater.showUpdateDialog(this, release, always = true) }
+    }
+
+    // ---- camera -----------------------------------------------------------------------------------
 
     private fun initBarcodeScanner() {
         // Restrict strictly to 1-D barcode formats matching warehouse labels
@@ -182,11 +288,9 @@ class ScannerActivity : AppCompatActivity() {
             processImageProxy(imageProxy)
         }
 
-        val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
         try {
             provider.unbindAll()
-            camera = provider.bindToLifecycle(this, cameraSelector, preview, imageAnalysis)
+            camera = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalysis)
             binding.tvScannerHint.text = getString(R.string.aim_at_awb)
         } catch (e: Exception) {
             binding.tvScannerHint.text = "Camera bind error: ${e.message}"
@@ -242,6 +346,8 @@ class ScannerActivity : AppCompatActivity() {
         }
     }
 
+    // ---- scanning ---------------------------------------------------------------------------------
+
     private fun submitScan(rawAwb: String) {
         if (!isRequestInFlight.compareAndSet(false, true)) return
 
@@ -264,42 +370,49 @@ class ScannerActivity : AppCompatActivity() {
 
             if (result.isSuccess) {
                 val scanResponse = result.getOrThrow()
+                setOnline(true)
                 displayScanResult(rawAwb, scanResponse)
                 soundManager.playFeedback(scanResponse.verdictType)
-                if (scanResponse.verdictType == VerdictType.OK || scanResponse.verdictType == VerdictType.CHECK) {
-                    scannedCountToday++
-                    if (pendingCount > 0) pendingCount--
-                    updateProgressCounters()
-                }
+                refreshSoon()
             } else {
-                val ex = result.exceptionOrNull()
-                if (ex is NetworkException) {
-                    displayNetworkError(rawAwb)
-                    soundManager.playFeedback(VerdictType.ERROR)
-                } else {
-                    displayGeneralError(rawAwb, ex?.message ?: "Scan rejected")
-                    soundManager.playFeedback(VerdictType.ERROR)
+                when (val ex = result.exceptionOrNull()) {
+                    is NetworkException -> {
+                        displayNetworkError(rawAwb)
+                        soundManager.playFeedback(VerdictType.ERROR)
+                    }
+                    is AuthExpiredException -> goToLogin()
+                    else -> {
+                        setOnline(true)
+                        displayGeneralError(rawAwb, ex?.message ?: "Scan rejected")
+                        soundManager.playFeedback(VerdictType.ERROR)
+                    }
                 }
             }
         }
     }
 
-    private fun displayScanResult(awb: String, response: ScanResponse) {
+    private fun showResultColors(color: Int) {
         binding.cardIdleState.visibility = View.GONE
         binding.cardResult.visibility = View.VISIBLE
+        binding.bannerVerdict.setBackgroundColor(color)
+        binding.cardResult.strokeColor = color
+        binding.scrollResultArea.scrollTo(0, 0)
+    }
 
+    private fun displayScanResult(awb: String, response: ScanResponse) {
         val vType = response.verdictType
-        val bannerColor = when (vType) {
-            VerdictType.OK -> ContextCompat.getColor(this, R.color.verdict_ok)
-            VerdictType.CHECK -> ContextCompat.getColor(this, R.color.verdict_check)
-            VerdictType.STOP -> ContextCompat.getColor(this, R.color.verdict_stop)
-            VerdictType.DUPLICATE -> ContextCompat.getColor(this, R.color.verdict_duplicate)
-            VerdictType.NOT_IN_OMS -> ContextCompat.getColor(this, R.color.verdict_unverified)
-            VerdictType.ERROR -> ContextCompat.getColor(this, R.color.verdict_stop)
-        }
-
-        binding.bannerVerdict.setBackgroundColor(bannerColor)
-        binding.cardResult.strokeColor = bannerColor
+        val bannerColor = ContextCompat.getColor(
+            this,
+            when (vType) {
+                VerdictType.OK -> R.color.verdict_ok
+                VerdictType.CHECK -> R.color.verdict_check
+                VerdictType.STOP -> R.color.verdict_stop
+                VerdictType.DUPLICATE -> R.color.verdict_duplicate
+                VerdictType.NOT_IN_OMS -> R.color.verdict_unverified
+                VerdictType.ERROR -> R.color.verdict_stop
+            }
+        )
+        showResultColors(bannerColor)
 
         binding.tvVerdictTitle.text = when (vType) {
             VerdictType.OK -> getString(R.string.verdict_verified)
@@ -310,87 +423,77 @@ class ScannerActivity : AppCompatActivity() {
             VerdictType.ERROR -> "SCAN ERROR"
         }
 
-        val messageText = if (vType == VerdictType.CHECK) {
+        binding.tvVerdictMessage.text = if (vType == VerdictType.CHECK) {
             "${getString(R.string.what_to_check)} ${response.message}"
         } else {
             response.message
         }
-        binding.tvVerdictMessage.text = messageText
         binding.tvResultAwb.text = awb
 
         val order = response.order
+        binding.layoutItemsList.removeAllViews()
         if (order != null) {
             binding.tvResultOrderId.text = order.channelOrderId.ifBlank { "ID: ${order.id}" }
-            binding.tvResultItemsCount.text = "${order.itemCount} SKU (${order.totalQty} Units)"
-
-            binding.layoutItemsList.removeAllViews()
+            binding.tvResultCourier.text = order.courier.ifBlank { "-" }
+            binding.tvResultItemsCount.text = itemsSummary(order.itemCount, order.totalQty)
             for (item in order.items.take(4)) {
-                val tvItem = TextView(this).apply {
-                    text = "• ${item.sku} (x${item.qty}) ${item.title.take(35)}"
-                    textSize = 12f
-                    setTextColor(ContextCompat.getColor(context, R.color.text_secondary))
-                    setPadding(0, 4, 0, 4)
-                }
-                binding.layoutItemsList.addView(tvItem)
+                addItemLine("${item.sku}  ×${item.qty}" + if (item.title.isNotBlank()) "  ${item.title.take(40)}" else "")
             }
+            if (order.items.size > 4) addItemLine("+${order.items.size - 4} more")
         } else {
             binding.tvResultOrderId.text = "-"
+            binding.tvResultCourier.text = "-"
             binding.tvResultItemsCount.text = "-"
-            binding.layoutItemsList.removeAllViews()
         }
     }
 
+    private fun itemsSummary(skus: Int, units: Int): String =
+        "$skus SKU${if (skus == 1) "" else "s"} · $units unit${if (units == 1) "" else "s"}"
+
+    private fun addItemLine(text: String) {
+        val tv = TextView(this).apply {
+            this.text = text
+            textSize = 12f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTextColor(ContextCompat.getColor(context, R.color.text_secondary))
+            val pad = Ui.dp(context, 2)
+            setPadding(0, pad, 0, pad)
+        }
+        binding.layoutItemsList.addView(tv)
+    }
+
     private fun displayNetworkError(awb: String) {
-        binding.cardIdleState.visibility = View.GONE
-        binding.cardResult.visibility = View.VISIBLE
-
-        val red = ContextCompat.getColor(this, R.color.verdict_stop)
-        binding.bannerVerdict.setBackgroundColor(red)
-        binding.cardResult.strokeColor = red
-
-        binding.tvVerdictTitle.text = "OFFLINE"
+        showResultColors(ContextCompat.getColor(this, R.color.verdict_stop))
+        binding.tvVerdictTitle.text = getString(R.string.verdict_offline)
         binding.tvVerdictMessage.text = getString(R.string.connection_offline)
         binding.tvResultAwb.text = awb
-        binding.tvResultOrderId.text = "Not submitted"
-        binding.tvResultItemsCount.text = "Check connection and rescan"
+        binding.tvResultOrderId.text = getString(R.string.not_submitted)
+        binding.tvResultCourier.text = "-"
+        binding.tvResultItemsCount.text = getString(R.string.check_connection_rescan)
         binding.layoutItemsList.removeAllViews()
-
-        binding.tvConnectionStatus.text = "Offline"
-        binding.tvConnectionStatus.setTextColor(red)
-        binding.tvConnectionStatus.setBackgroundColor(ContextCompat.getColor(this, R.color.verdict_stop_bg))
+        setOnline(false)
     }
 
     private fun displayGeneralError(awb: String, errorMsg: String) {
-        binding.cardIdleState.visibility = View.GONE
-        binding.cardResult.visibility = View.VISIBLE
-
-        val red = ContextCompat.getColor(this, R.color.verdict_stop)
-        binding.bannerVerdict.setBackgroundColor(red)
-        binding.cardResult.strokeColor = red
-
+        showResultColors(ContextCompat.getColor(this, R.color.verdict_stop))
         binding.tvVerdictTitle.text = getString(R.string.verdict_stop)
         binding.tvVerdictMessage.text = errorMsg
         binding.tvResultAwb.text = awb
         binding.tvResultOrderId.text = "-"
+        binding.tvResultCourier.text = "-"
         binding.tvResultItemsCount.text = "-"
         binding.layoutItemsList.removeAllViews()
-    }
-
-    private fun updateProgressCounters() {
-        binding.tvProgressScanned.text = "Scanned: $scannedCountToday"
-        binding.tvProgressPending.text = "$pendingCount pending"
-        val total = scannedCountToday + pendingCount
-        if (total > 0) {
-            val pct = (scannedCountToday * 100) / total
-            binding.progressBarScans.progress = pct
-        }
     }
 
     private fun toggleTorch() {
         val cam = camera ?: return
         isTorchOn = !isTorchOn
         cam.cameraControl.enableTorch(isTorchOn)
-        binding.btnTorch.text = if (isTorchOn) getString(R.string.torch_off) else getString(R.string.torch_on)
+        val color = ContextCompat.getColor(this, if (isTorchOn) R.color.colorPrimary else R.color.text_primary)
+        binding.tvTorchLabel.text = getString(if (isTorchOn) R.string.torch_on else R.string.torch_off)
+        binding.tvTorchLabel.setTextColor(color)
+        ImageViewCompat.setImageTintList(binding.ivTorch, android.content.res.ColorStateList.valueOf(color))
     }
 
     private fun showManualScanDialog() {
@@ -416,53 +519,191 @@ class ScannerActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    private fun showRecentScansDialog() {
-        val dialogBinding = DialogRecentScansBinding.inflate(layoutInflater)
-        val dialog = MaterialAlertDialogBuilder(this)
-            .setView(dialogBinding.root)
-            .create()
+    // ---- Pending sheet ------------------------------------------------------------------------
 
-        dialogBinding.btnCloseRecent.setOnClickListener {
-            dialog.dismiss()
+    private fun newSheet(): BottomSheetDialog {
+        val sheet = BottomSheetDialog(this, R.style.ThemeOverlay_ForwardScan_BottomSheet)
+        sheet.behavior.skipCollapsed = true
+        sheet.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+        return sheet
+    }
+
+    private fun showPendingSheet() {
+        val sb = SheetPendingBinding.inflate(layoutInflater)
+        val sheet = newSheet()
+        sheet.setContentView(sb.root)
+        sb.tvPendingChannel.text = channelName
+        sb.btnClosePending.setOnClickListener { sheet.dismiss() }
+        sb.btnRefreshPending.setOnClickListener { reloadPending(sb) }
+        sheet.setOnDismissListener { if (pendingSheet === sb) pendingSheet = null }
+        pendingSheet = sb
+        scanContext?.let { renderPendingSheet(sb, it) }
+        sheet.show()
+        reloadPending(sb)
+    }
+
+    private fun reloadPending(sb: SheetPendingBinding) {
+        sb.progressPending.visibility = View.VISIBLE
+        lifecycleScope.launch {
+            val ok = loadContext()  // renders into the sheet while it is open
+            if (pendingSheet !== sb) return@launch
+            sb.progressPending.visibility = View.INVISIBLE
+            if (!ok) {
+                if (scanContext == null) {
+                    sb.tvPendingEmpty.text = getString(R.string.pending_load_failed)
+                    sb.tvPendingEmpty.visibility = View.VISIBLE
+                } else {
+                    Toast.makeText(this@ScannerActivity, R.string.pending_load_failed, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun renderPendingSheet(sb: SheetPendingBinding, ctx: ScanContext) {
+        sb.tvSumToday.text = Ui.count(ctx.awb.pending)
+        sb.tvSumOverdue.text = Ui.count(ctx.awb.overdue)
+        sb.tvSumScanned.text = Ui.count(ctx.scannedToday)
+
+        sb.pendingList.removeAllViews()
+        if (ctx.queue.isEmpty()) {
+            sb.tvPendingEmpty.text = getString(R.string.pending_none)
+            sb.tvPendingEmpty.visibility = View.VISIBLE
+            sb.tvPendingFooter.visibility = View.GONE
+            return
+        }
+        sb.tvPendingEmpty.visibility = View.GONE
+
+        ctx.queue.forEachIndexed { index, row ->
+            if (index > 0) sb.pendingList.addView(divider())
+            sb.pendingList.addView(pendingRow(sb.pendingList, row))
+        }
+        if (ctx.queueTotal > ctx.queue.size) {
+            sb.tvPendingFooter.text = getString(R.string.pending_footer_format, ctx.queue.size, Ui.count(ctx.queueTotal))
+            sb.tvPendingFooter.visibility = View.VISIBLE
+        } else {
+            sb.tvPendingFooter.visibility = View.GONE
+        }
+    }
+
+    private fun pendingRow(parent: ViewGroup, row: PendingAwb): View {
+        val rb = ItemPendingRowBinding.inflate(layoutInflater, parent, false)
+        rb.tvRowAwb.text = row.awb
+        rb.tvRowTag.text = when (row.priority) {
+            "Urgent" -> getString(R.string.priority_urgent)
+            "High" -> getString(R.string.priority_high)
+            else -> getString(R.string.priority_normal)
+        }
+        when (row.priority) {
+            "Urgent" -> Ui.pillRes(rb.tvRowTag, R.color.verdict_stop, R.color.verdict_stop_bg)
+            "High" -> Ui.pillRes(rb.tvRowTag, R.color.verdict_check, R.color.verdict_check_bg)
+            else -> Ui.pillRes(rb.tvRowTag, R.color.text_secondary, R.color.surface_muted)
         }
 
-        dialogBinding.progressRecent.visibility = View.VISIBLE
+        val meta = mutableListOf<String>()
+        if (row.orderId.isNotBlank()) meta.add(getString(R.string.order_prefix, row.orderId))
+        if (row.courier.isNotBlank()) meta.add(row.courier)
+        if (row.skus > 0 || row.units > 0) meta.add(itemsSummary(row.skus, row.units))
+        rb.tvRowMeta.text = meta.joinToString(" · ")
+
+        val awbAt = Ui.parseIsoUtc(row.awbGeneratedAt)
+        val sla = Ui.parseIsoUtc(row.slaDate)
+        if (row.ageDays > 0) {
+            val from = awbAt?.let { Ui.shortDate(it) } ?: "-"
+            rb.tvRowWhen.text = resources.getQuantityString(R.plurals.overdue_days, row.ageDays, from, row.ageDays)
+            rb.tvRowWhen.setTextColor(ContextCompat.getColor(this, R.color.verdict_stop))
+        } else if (sla != null) {
+            rb.tvRowWhen.text = getString(R.string.ship_by_format, Ui.shortDateTime(sla))
+        } else if (awbAt != null) {
+            rb.tvRowWhen.text = getString(R.string.awb_generated_format, Ui.shortDateTime(awbAt))
+        } else {
+            rb.tvRowWhen.visibility = View.GONE
+        }
+        return rb.root
+    }
+
+    private fun divider(): View = View(this).apply {
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(context, 1))
+        setBackgroundColor(ContextCompat.getColor(context, R.color.border))
+    }
+
+    // ---- Recent scans sheet -------------------------------------------------------------------
+
+    private fun showRecentScansSheet() {
+        val sb = DialogRecentScansBinding.inflate(layoutInflater)
+        val sheet = newSheet()
+        sheet.setContentView(sb.root)
+        sb.tvRecentSub.text = channelName
+        sb.btnCloseRecent.setOnClickListener { sheet.dismiss() }
+        sb.progressRecent.visibility = View.VISIBLE
+        sheet.show()
 
         lifecycleScope.launch {
             val app = application as ForwardScanApp
             val result = withContext(Dispatchers.IO) {
-                app.apiClient.getRecentScans(channelId, limit = 25)
+                app.apiClient.getRecentScans(channelId, limit = 30)
             }
+            sb.progressRecent.visibility = View.INVISIBLE
+            sb.recentScansContainer.removeAllViews()
 
-            dialogBinding.progressRecent.visibility = View.GONE
-
-            if (result.isSuccess) {
-                val list = result.getOrNull().orEmpty()
-                if (list.isEmpty()) {
-                    val tv = TextView(this@ScannerActivity).apply {
-                        text = "No scans yet today for this channel"
-                        setPadding(16, 24, 16, 24)
-                        setTextColor(ContextCompat.getColor(context, R.color.text_muted))
-                    }
-                    dialogBinding.recentScansContainer.addView(tv)
-                } else {
-                    for (scan in list) {
-                        val tv = TextView(this@ScannerActivity).apply {
-                            text = "${scan.trackingRaw} [${scan.result}] • ${scan.scannedAtLocal}"
-                            textSize = 13f
-                            setTextColor(
-                                if (scan.result == "OK") ContextCompat.getColor(context, R.color.verdict_ok)
-                                else ContextCompat.getColor(context, R.color.verdict_check)
-                            )
-                            setPadding(8, 12, 8, 12)
-                        }
-                        dialogBinding.recentScansContainer.addView(tv)
-                    }
-                }
+            val list = result.getOrNull()
+            if (list == null) {
+                if (result.exceptionOrNull() is NetworkException) setOnline(false)
+                sb.recentScansContainer.addView(messageLine(getString(R.string.recent_load_failed)))
+                return@launch
+            }
+            setOnline(true)
+            if (list.isEmpty()) {
+                sb.recentScansContainer.addView(messageLine(getString(R.string.recent_empty)))
+                return@launch
+            }
+            list.forEachIndexed { index, scan ->
+                if (index > 0) sb.recentScansContainer.addView(divider())
+                sb.recentScansContainer.addView(recentRow(sb.recentScansContainer, scan))
             }
         }
+    }
 
-        dialog.show()
+    private fun recentRow(parent: ViewGroup, scan: ScanDetails): View {
+        val rb = ItemPendingRowBinding.inflate(layoutInflater, parent, false)
+        rb.tvRowAwb.text = scan.trackingRaw
+        when (scan.result) {
+            "OK" -> {
+                rb.tvRowTag.text = getString(R.string.result_ok)
+                Ui.pillRes(rb.tvRowTag, R.color.verdict_ok, R.color.verdict_ok_bg)
+            }
+            "UNVERIFIED" -> {
+                rb.tvRowTag.text = getString(R.string.result_unverified)
+                Ui.pillRes(rb.tvRowTag, R.color.verdict_unverified, R.color.verdict_unverified_bg)
+            }
+            else -> {
+                rb.tvRowTag.text = getString(R.string.result_check)
+                Ui.pillRes(rb.tvRowTag, R.color.verdict_check, R.color.verdict_check_bg)
+            }
+        }
+        val who = listOf(scan.scannedAtLocal, scan.user, scan.station).filter { it.isNotBlank() }.joinToString(" · ")
+        rb.tvRowMeta.text = who
+        if (scan.message.isNotBlank() && scan.result != "OK") {
+            rb.tvRowWhen.text = scan.message
+        } else {
+            rb.tvRowWhen.visibility = View.GONE
+        }
+        return rb.root
+    }
+
+    private fun messageLine(text: String): View = TextView(this).apply {
+        this.text = text
+        textSize = 14f
+        val pad = Ui.dp(context, 24)
+        setPadding(0, pad, 0, pad)
+        gravity = android.view.Gravity.CENTER
+        setTextColor(ContextCompat.getColor(context, R.color.text_secondary))
+    }
+
+    private fun goToLogin() {
+        startActivity(Intent(this, LoginActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        })
+        finish()
     }
 
     override fun onDestroy() {

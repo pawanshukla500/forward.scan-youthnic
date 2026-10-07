@@ -36,6 +36,8 @@ class SessionManager(private val context: Context) {
         private const val PREF_VIBRATION_ENABLED = "vibration_enabled"
         private const val PREF_LAST_CHANNEL_ID = "last_channel_id"
         private const val PREF_LAST_CHANNEL_NAME = "last_channel_name"
+        private const val PREF_LAST_CHANNEL_COLOR = "last_channel_color"
+        private const val PREF_ASKED_NOTIFICATIONS = "asked_notification_permission"
         private const val PREF_SERVER_URL = "server_url"
     }
 
@@ -198,6 +200,15 @@ class SessionManager(private val context: Context) {
     var lastChannelName: String
         get() = prefs.getString(PREF_LAST_CHANNEL_NAME, "") ?: ""
         set(value) = prefs.edit().putString(PREF_LAST_CHANNEL_NAME, value).apply()
+
+    var lastChannelColor: String
+        get() = prefs.getString(PREF_LAST_CHANNEL_COLOR, "") ?: ""
+        set(value) = prefs.edit().putString(PREF_LAST_CHANNEL_COLOR, value).apply()
+
+    /** The Android 13+ notification permission was requested once (for update notifications). */
+    var askedNotificationPermission: Boolean
+        get() = prefs.getBoolean(PREF_ASKED_NOTIFICATIONS, false)
+        set(value) = prefs.edit().putBoolean(PREF_ASKED_NOTIFICATIONS, value).apply()
 
     var serverUrl: String
         get() = prefs.getString(PREF_SERVER_URL, BuildConfig.DEFAULT_API_URL) ?: BuildConfig.DEFAULT_API_URL

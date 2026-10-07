@@ -152,5 +152,12 @@ class Settings:
 
     cors_origins: str = os.getenv("CORS_ORIGINS", "")
 
+    # --- Android app distribution (routers/mobile_app.py) ---
+    # Public address of this server, e.g. https://scan.youthnic.shop - used for the download link / QR code.
+    # Empty = taken from the request (X-Forwarded-* headers behind a proxy).
+    public_url: str = os.getenv("PUBLIC_URL", "").strip().rstrip("/")
+    # Where the APK build workflow drops forward-scan-app.apk + latest.json (data/ is kept across deploys).
+    app_release_dir: str = field(default_factory=lambda: _path_setting("APP_RELEASE_DIR", "data/app"))
+
 
 settings = Settings()

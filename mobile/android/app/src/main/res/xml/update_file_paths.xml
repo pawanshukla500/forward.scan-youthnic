@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Downloaded app updates (AppUpdater) are handed to the Android package installer through FileProvider. -->
+<paths>
+    <external-files-path
+        name="updates"
+        path="Download/" />
+</paths>

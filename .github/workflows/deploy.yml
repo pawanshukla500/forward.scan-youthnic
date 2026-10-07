@@ -167,6 +167,7 @@ jobs:
           BACKUP_KEEP_DAILY=${BACKUP_KEEP_DAILY}
           BACKUP_KEEP_MONTHLY=${BACKUP_KEEP_MONTHLY}
           CORS_ORIGINS=${CORS_ORIGINS}
+          PUBLIC_URL=https://${APP_DOMAIN}
           EOF
 
           tar --warning=no-file-changed \

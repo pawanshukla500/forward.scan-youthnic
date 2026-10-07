@@ -3,6 +3,7 @@ package shop.youthnic.scan
 import android.app.Application
 import shop.youthnic.scan.data.ApiClient
 import shop.youthnic.scan.data.SessionManager
+import shop.youthnic.scan.update.AppUpdater
 import shop.youthnic.scan.util.SoundManager
 
 class ForwardScanApp : Application() {
@@ -22,6 +23,8 @@ class ForwardScanApp : Application() {
         sessionManager = SessionManager(this)
         apiClient = ApiClient(sessionManager)
         soundManager = SoundManager(this, sessionManager)
+        AppUpdater.ensureChannel(this)
+        AppUpdater.scheduleBackgroundCheck(this)
     }
 
     companion object {
