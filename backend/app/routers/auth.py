@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
@@ -9,8 +11,18 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import get_db
-from ..models import User
-from ..security import COOKIE_NAME, current_user, hash_password, issue_token, password_problem, verify_password
+from ..models import MobileDeviceSession, User
+from ..security import (
+    COOKIE_NAME,
+    MOBILE_REFRESH_DAYS,
+    current_user,
+    generate_refresh_token,
+    hash_password,
+    hash_refresh_token,
+    issue_token,
+    password_problem,
+    verify_password,
+)
 from ..timeutil import iso_utc, utcnow
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -111,3 +123,121 @@ def change_password(body: PasswordChangeIn, request: Request, response: Response
     db.commit()
     _set_session(response, request, user, remember=True)
     return {"user": user_payload(user)}
+
+
+# ---- mobile device sessions (long-lived 90-day refresh) -----------------------------------
+
+
+class MobileLoginIn(BaseModel):
+    username: str = Field(max_length=200)
+    password: str = Field(max_length=200)
+    device_info: str = Field(default="", max_length=200)
+
+
+class MobileRefreshIn(BaseModel):
+    refresh_token: str = Field(min_length=20, max_length=256)
+    device_info: str = Field(default="", max_length=200)
+
+
+class MobileLogoutIn(BaseModel):
+    refresh_token: str | None = Field(default=None, max_length=256)
+
+
+@router.post("/mobile/login")
+def mobile_login(body: MobileLoginIn, request: Request, db: Session = Depends(get_db)):
+    """Issue a normal short-lived access JWT plus a 90-day cryptographically random refresh token."""
+    ident = body.username.strip().lower()
+    key = f"mobile|{ident}|{request.client.host if request.client else ''}"
+    recent = _throttle(key)
+    who = User.email == ident if "@" in ident else User.username == ident
+    user = db.scalar(select(User).where(who)) if ident else None
+    if not user or not user.is_active or not verify_password(body.password, user.password_hash):
+        raise _fail(key, recent, "Wrong email / username or password")
+    _failures.pop(key, None)
+    now = utcnow()
+    user.last_login_at = now
+
+    raw_refresh = generate_refresh_token()
+    session = MobileDeviceSession(
+        user_id=user.id,
+        token_hash=hash_refresh_token(raw_refresh),
+        device_info=body.device_info.strip()[:200],
+        token_version=user.token_version,
+        created_at=now,
+        expires_at=now + timedelta(days=MOBILE_REFRESH_DAYS),
+        last_used_at=now,
+    )
+    db.add(session)
+    db.commit()
+
+    token = issue_token(user)
+    return {
+        "user": user_payload(user),
+        "token": token,
+        "refresh_token": raw_refresh,
+        "expires_at": iso_utc(now + timedelta(hours=settings.token_hours)),
+        "refresh_expires_at": iso_utc(session.expires_at),
+    }
+
+
+@router.post("/mobile/refresh")
+def mobile_refresh(body: MobileRefreshIn, db: Session = Depends(get_db)):
+    """Exchange a valid mobile refresh token for a fresh access token and rotate the refresh token."""
+    thash = hash_refresh_token(body.refresh_token)
+    session = db.scalar(select(MobileDeviceSession).where(MobileDeviceSession.token_hash == thash))
+    if not session or session.revoked_at is not None:
+        raise HTTPException(401, "Session is invalid or has been revoked")
+
+    now = utcnow()
+    if session.expires_at <= now:
+        raise HTTPException(401, "Refresh session has expired. Please sign in again.")
+
+    user = session.user
+    if not user or not user.is_active:
+        session.revoked_at = now
+        db.commit()
+        raise HTTPException(401, "User account is disabled")
+
+    if user.token_version != session.token_version:
+        session.revoked_at = now
+        db.commit()
+        raise HTTPException(401, "Password has changed or session was invalidated. Please sign in again.")
+
+    # Rotate refresh token: revoke previous session, issue new one
+    session.revoked_at = now
+    session.last_used_at = now
+
+    new_raw_refresh = generate_refresh_token()
+    new_session = MobileDeviceSession(
+        user_id=user.id,
+        token_hash=hash_refresh_token(new_raw_refresh),
+        device_info=(body.device_info.strip() or session.device_info)[:200],
+        token_version=user.token_version,
+        created_at=now,
+        expires_at=now + timedelta(days=MOBILE_REFRESH_DAYS),
+        last_used_at=now,
+    )
+    db.add(new_session)
+    db.commit()
+
+    token = issue_token(user)
+    return {
+        "user": user_payload(user),
+        "token": token,
+        "refresh_token": new_raw_refresh,
+        "expires_at": iso_utc(now + timedelta(hours=settings.token_hours)),
+        "refresh_expires_at": iso_utc(new_session.expires_at),
+    }
+
+
+@router.post("/mobile/logout")
+def mobile_logout(body: MobileLogoutIn = MobileLogoutIn(), db: Session = Depends(get_db)):
+    """Revoke a mobile device session so its refresh token cannot be used again."""
+    if body.refresh_token:
+        thash = hash_refresh_token(body.refresh_token)
+        session = db.scalar(select(MobileDeviceSession).where(MobileDeviceSession.token_hash == thash))
+        if session and not session.revoked_at:
+            session.revoked_at = utcnow()
+            db.commit()
+    return {"ok": True}
+

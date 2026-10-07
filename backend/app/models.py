@@ -42,6 +42,25 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class MobileDeviceSession(Base):
+    """Long-lived device sessions for native mobile warehouse phones (90-day rolling refresh)."""
+
+    __tablename__ = "mobile_device_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    device_info: Mapped[str] = mapped_column(String(200), default="")
+    token_version: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped[User] = relationship(lazy="joined")
+
+
+
 class Channel(Base):
     """An OMSGuru channel company, i.e. a Sales Channel (seller account on a marketplace)."""
 

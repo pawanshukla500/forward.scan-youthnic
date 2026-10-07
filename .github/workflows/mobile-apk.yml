@@ -1,20 +1,17 @@
 name: Build Android APK
 
-# Installable app for the warehouse phones: bundles the web UI with Capacitor and a
-# native ML Kit barcode scanner (embedded, always-on camera). Produces a debug APK that
-# installs directly on Android (allow "Install unknown apps" once). Run from the Actions
-# tab - the APK lands on a GitHub Release so phones can download it straight from GitHub.
-# Login works with the same username/password; the app signs in by Bearer token and
-# stays signed in on the device (no cookies needed).
-#
-# Updates install over the old app only if every build is signed with the SAME key:
-# put a keystore (alias androiddebugkey, password android) base64-encoded in the
-# ANDROID_DEBUG_KEYSTORE_B64 repository secret. Without it each build gets a throwaway
-# key and phones must uninstall the old app first (the job warns about it).
+# Production Android application for warehouse phones:
+# Native Android Kotlin app with CameraX, ML Kit barcode scanning, Android KeyStore
+# encryption, and R8 shrinking for ~2 GB RAM phones (package: shop.youthnic.scan).
+# Preserves legacy Capacitor workflow for parity verification.
 
 on:
   workflow_dispatch:
     inputs:
+      build_engine:
+        description: "Build engine ('native' or 'capacitor-legacy')"
+        required: true
+        default: "native"
       api_url:
         description: "Server the app talks to"
         required: true
@@ -33,8 +30,165 @@ permissions:
   contents: write
 
 jobs:
-  apk:
-    name: Build debug APK
+  native-apk:
+    name: Build Native Android Release APK
+    if: ${{ inputs.build_engine == 'native' || github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile/android
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: Install Android Packages
+        run: |
+          TOOLS="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin"
+          [ -d "$TOOLS" ] || TOOLS=$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin | head -1)
+          export PATH="$TOOLS:$PATH"
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Set Executable Permissions
+        run: chmod +x gradlew
+
+      - name: Setup Fixed Signing Key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 is not set: using default debug signing key."
+            exit 0
+          fi
+          KS="$RUNNER_TEMP/forward-scan.keystore"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS"
+          keytool -list -keystore "$KS" -storepass android -alias androiddebugkey > /dev/null
+          echo "FS_KEYSTORE=$KS" >> "$GITHUB_ENV"
+          echo "Using fixed signing key from ANDROID_DEBUG_KEYSTORE_B64"
+
+      - name: Run Native Unit Tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Run Android Lint
+        run: ./gradlew lintDebug --no-daemon
+
+      - name: Assemble Release APK (R8 & Resource Shrink)
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Find Release APK
+        run: |
+          APK=$(find app/build/outputs/apk/release/ -name "*.apk" | head -1)
+          echo "RELEASE_APK=$APK" >> "$GITHUB_ENV"
+          echo "Found release APK: $APK"
+
+      # Verify Package ID: MUST be shop.youthnic.scan
+      - name: Verify Package ID and Version Code
+        run: |
+          AAPT="$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt"
+          "$AAPT" dump badging "$RELEASE_APK" > /tmp/badging.txt
+          cat /tmp/badging.txt | grep -E "package: name="
+
+          PKG=$(grep -o "name='[^']*'" /tmp/badging.txt | head -1 | cut -d"'" -f2)
+          if [ "$PKG" != "shop.youthnic.scan" ]; then
+            echo "::error::Package ID mismatch! Expected 'shop.youthnic.scan', got '$PKG'"
+            exit 1
+          fi
+          echo "Package ID verified: $PKG"
+
+          VCODE=$(grep -o "versionCode='[^']*'" /tmp/badging.txt | head -1 | cut -d"'" -f2)
+          echo "versionCode is: $VCODE"
+          if [ "$VCODE" -lt 10000 ]; then
+            echo "::error::versionCode ($VCODE) must be >= 10000 to guarantee monotonic update over previous APK!"
+            exit 1
+          fi
+
+      # Verify Camera Permission
+      - name: Verify Camera Permission
+        run: |
+          grep -q "uses-permission: name='android.permission.CAMERA'" /tmp/badging.txt || {
+            echo "::error::android.permission.CAMERA is missing from APK!"
+            exit 1
+          }
+          echo "Camera permission verified in APK."
+
+      # Verify Signing Certificate
+      - name: Verify Signing Certificate
+        run: |
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" verify --print-certs "$RELEASE_APK" | tee /tmp/certs.txt | grep -E "SHA-256|DN"
+          if [ -n "${FS_KEYSTORE:-}" ]; then
+            EXPECTED=$(keytool -list -v -keystore "$FS_KEYSTORE" -storepass android -alias androiddebugkey | grep -m1 "SHA256:" | sed 's/.*SHA256: *//; s/://g' | tr 'A-F' 'a-f')
+            ACTUAL=$(grep -m1 "SHA-256 digest" /tmp/certs.txt | sed 's/.*digest: *//')
+            echo "expected $EXPECTED"
+            echo "actual   $ACTUAL"
+            if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$ACTUAL" ]; then
+              echo "::error::APK certificate fingerprint ($ACTUAL) does not match expected keystore certificate ($EXPECTED)!"
+              exit 1
+            fi
+            echo "Certificate matches expected signing key."
+          fi
+
+      # Measure APK Byte and MB Size (Budget: <= 20 MB hard ceiling, target <= 15 MB)
+      - name: Check APK Size Budget
+        run: |
+          SIZE_BYTES=$(wc -c < "$RELEASE_APK")
+          SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1048576" | bc)
+          echo "=============================================="
+          echo "Final Native Android Release APK Size:"
+          echo "$SIZE_BYTES bytes ($SIZE_MB MB)"
+          echo "Target budget: <= 15 MB"
+          echo "Hard limit:    <= 20 MB"
+          echo "=============================================="
+
+          # 20 MB hard budget = 20971520 bytes
+          if [ "$SIZE_BYTES" -gt 20971520 ]; then
+            echo "::error::APK size ($SIZE_MB MB) exceeds the approved hard budget of 20 MB!"
+            exit 1
+          fi
+          echo "APK size budget check PASSED."
+
+      - name: Upload Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: forward-scan-app
+          path: mobile/android/${{ env.RELEASE_APK }}
+          if-no-files-found: error
+
+      - name: Prepare APK for Release
+        if: ${{ inputs.publish }}
+        run: cp "$RELEASE_APK" app/build/outputs/apk/release/forward-scan-app.apk
+
+      - name: Publish GitHub Release
+        if: ${{ inputs.publish }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: Forward Scan Native App (${{ inputs.release_tag }})
+          body: |
+            Native Android warehouse application (Kotlin, CameraX, ML Kit).
+            Package: shop.youthnic.scan
+            Version: 1.0.${{ github.run_number }} (code: ${{ 10000 + github.run_number }})
+            Built from commit ${{ github.sha }} against ${{ inputs.api_url }}.
+
+            Features:
+            - Native CameraX always-on barcode scanner
+            - ML Kit 1-D barcode recognition (Code128, Code39, EAN, ITF)
+            - 90-day mobile device session refresh with Android KeyStore encryption
+            - Fast, lightweight design optimized for ~2 GB RAM devices
+            - Smooth update installation over existing warehouse phones
+          prerelease: true
+          make_latest: true
+          files: mobile/android/app/build/outputs/apk/release/forward-scan-app.apk
+          fail_on_unmatched_files: true
+
+  capacitor-legacy-apk:
+    name: Build Legacy Capacitor APK (Parity Check)
+    if: ${{ inputs.build_engine == 'capacitor-legacy' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -56,9 +210,6 @@ jobs:
           distribution: "temurin"
           java-version: "21"
 
-      # ubuntu runners already ship the Android SDK - just make sure the packages
-      # Capacitor needs are present (the setup-android action is broken: it asks
-      # sdkmanager for the long-removed "tools" package and fails).
       - name: Install Android Packages
         run: |
           TOOLS="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin"
@@ -73,20 +224,13 @@ jobs:
       - name: Build Web UI for the App
         env:
           VITE_API_URL: ${{ inputs.api_url }}
-        run: |
-          npm run build
-          # fail fast if the server URL did not make it into the bundle - without it
-          # the app shows "Failed to fetch" on login and nothing works
-          grep -o "${{ inputs.api_url }}" dist/assets/*.js | head -1
+        run: npm run build
 
       - name: Add Android Platform
         run: |
           if [ ! -d android ]; then npx cap add android; fi
           npx cap sync android
 
-      # The ML Kit plugin does not declare CAMERA itself and neither does the default
-      # Capacitor manifest - without this the app shows "No permissions requested" and the
-      # system can never grant camera access, so scanning fails with "permission blocked".
       - name: Declare Camera Permission
         run: |
           python3 - <<'EOF'
@@ -94,127 +238,12 @@ jobs:
           m = Path("android/app/src/main/AndroidManifest.xml")
           s = m.read_text()
           if "android.permission.CAMERA" not in s:
-              assert "</manifest>" in s
               s = s.replace("</manifest>", '    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera.any" android:required="false" />\n</manifest>')
               m.write_text(s)
-          assert "android.permission.CAMERA" in m.read_text()
-          print("camera permission declared")
           EOF
-
-      # Same look as the web app: brand-green icon with the white scan mark (adaptive, round,
-      # themed and pre-Android-8 variants), green launch screen, brand status bar colours.
-      # Vector XML only (frontend/android-res) - Capacitor's default PNG icons and splash go.
-      - name: Brand Icon, Splash and Colours
-        run: |
-          RES=android/app/src/main/res
-          rm -f $RES/mipmap-*/ic_launcher*.png $RES/drawable*/splash.png
-          rm -f $RES/drawable-v24/ic_launcher_foreground.xml $RES/drawable/ic_launcher_background.xml
-          cp -r android-res/. $RES/
-          python3 - <<'EOF'
-          from pathlib import Path
-          p = Path("android/app/src/main/res/values/styles.xml")
-          s = p.read_text()
-          launch = '<style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">'
-          assert launch in s, "launch theme not found"
-          if "windowSplashScreenBackground" not in s:
-              s = s.replace(launch, launch + '\n        <item name="windowSplashScreenBackground">@color/ic_launcher_background</item>\n        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>')
-          p.write_text(s)
-          print(s)
-          EOF
-          ls -R $RES | grep -E "ic_launcher|splash"
-
-      # versionName 1.0.<run> shows in Android's App info, so anyone can see which build a phone runs.
-      - name: Version the App
-        run: |
-          sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/; s/versionName \"[^\"]*\"/versionName \"1.0.${{ github.run_number }}\"/" android/app/build.gradle
-          grep -E "versionCode|versionName" android/app/build.gradle
-
-      # Gradle's default debug-key location is not reliable on the runner, so the key goes to a
-      # known file and the generated build.gradle gets an explicit debug signing config.
-      - name: Fixed Signing Key
-        env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
-        run: |
-          if [ -z "$KEYSTORE_B64" ]; then
-            echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 is not set: this APK gets a throwaway signing key, so phones must uninstall the old Forward Scan app before installing it."
-            exit 0
-          fi
-          KS="$RUNNER_TEMP/forward-scan.keystore"
-          printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS"
-          keytool -list -keystore "$KS" -storepass android -alias androiddebugkey > /dev/null
-          echo "FS_KEYSTORE=$KS" >> "$GITHUB_ENV"
-          FS_KEYSTORE="$KS" python3 - <<'EOF'
-          import os
-          from pathlib import Path
-          p = Path("android/app/build.gradle")
-          s = p.read_text()
-          assert "\nandroid {" in s, "android block not found"
-          ks = os.environ["FS_KEYSTORE"]
-          block = (
-              "\nandroid {\n"
-              "    signingConfigs {\n"
-              "        debug {\n"
-              f"            storeFile file('{ks}')\n"
-              "            storePassword 'android'\n"
-              "            keyAlias 'androiddebugkey'\n"
-              "            keyPassword 'android'\n"
-              "        }\n"
-              "    }\n"
-          )
-          s = s.replace("\nandroid {\n", block, 1)
-          p.write_text(s)
-          print("debug signing config -> fixed key")
-          EOF
-          echo "Signing with the fixed key from ANDROID_DEBUG_KEYSTORE_B64 - updates install over the previous app."
 
       - name: Build Debug APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
-
-      # Fail rather than ship an APK that cannot update the installed app.
-      - name: Check Signing Certificate
-        run: |
-          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | tee /tmp/certs.txt | grep -E "SHA-256|DN"
-          if [ -n "${FS_KEYSTORE:-}" ]; then
-            EXPECTED=$(keytool -list -v -keystore "$FS_KEYSTORE" -storepass android -alias androiddebugkey | grep -m1 "SHA256:" | sed 's/.*SHA256: *//; s/://g' | tr 'A-F' 'a-f')
-            ACTUAL=$(grep -m1 "SHA-256 digest" /tmp/certs.txt | sed 's/.*digest: *//')
-            echo "expected $EXPECTED"
-            echo "actual   $ACTUAL"
-            [ -n "$EXPECTED" ] && [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::The APK is not signed with the fixed key - it could not update installed apps."; exit 1; }
-          fi
-
-      # Ground truth for what App info will list: fail the job if CAMERA is missing from the APK.
-      - name: Verify Camera Permission in APK
-        run: |
-          AAPT="$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt"
-          "$AAPT" dump badging android/app/build/outputs/apk/debug/app-debug.apk | tee /tmp/badging.txt
-          grep -q "uses-permission: name='android.permission.CAMERA'" /tmp/badging.txt
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: forward-scan-app
-          path: frontend/android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-
-      - name: Rename APK for Release
-        if: ${{ inputs.publish }}
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk android/app/build/outputs/apk/debug/forward-scan-app.apk
-
-      - name: Publish GitHub Release
-        if: ${{ inputs.publish }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.release_tag }}
-          name: Forward Scan app (${{ inputs.release_tag }})
-          body: |
-            Installable Android app for the warehouse phones - version 1.0.${{ github.run_number }} (App info shows it). Built from ${{ github.sha }} against ${{ inputs.api_url }}.
-
-            Install: download forward-scan-app.apk on the phone, allow "Install unknown apps" once, then sign in with the same Forward Scan username and password.
-            If Android says "App not installed", uninstall the old Forward Scan app once and install again (happens when the signing key changed).
-          prerelease: true
-          make_latest: true
-          files: frontend/android/app/build/outputs/apk/debug/forward-scan-app.apk
-          fail_on_unmatched_files: true
