@@ -131,6 +131,12 @@ def clean_row_for_table(row_dict: dict[str, Any], table) -> dict[str, Any]:
                     cleaned[col.name] = 0
                 elif isinstance(col.type, (String, Text)):
                     cleaned[col.name] = ""
+                elif isinstance(col.type, Date):
+                    ts = row_dict.get("scanned_at") or row_dict.get("created_at") or row_dict.get("updated_at")
+                    dt = parse_datetime_val(ts)
+                    cleaned[col.name] = dt.date() if dt else date.today()
+                elif isinstance(col.type, DateTime):
+                    cleaned[col.name] = datetime.now()
                 else:
                     cleaned[col.name] = None
             else:

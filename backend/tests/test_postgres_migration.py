@@ -126,6 +126,7 @@ def test_full_migration_to_postgres(tmp_path):
             order_id INTEGER,
             tracking_raw TEXT NOT NULL,
             tracking_norm TEXT NOT NULL,
+            dispatch_date DATE NOT NULL,
             result TEXT NOT NULL,
             message TEXT DEFAULT '',
             flags_json TEXT DEFAULT '[]',
@@ -146,6 +147,7 @@ def test_full_migration_to_postgres(tmp_path):
             user_id INTEGER NOT NULL REFERENCES users(id),
             tracking_raw TEXT NOT NULL,
             tracking_norm TEXT NOT NULL,
+            dispatch_date DATE NOT NULL,
             station TEXT DEFAULT '',
             outcome TEXT NOT NULL,
             reason TEXT DEFAULT '',
@@ -163,12 +165,12 @@ def test_full_migration_to_postgres(tmp_path):
         VALUES (1, 'Flipkart PPMP', 'Flipkart PPMP', 'VB EXPORT', 'active', '#126B4E', 1, 1, '', '2026-10-07 10:00:00');
     """)
     sqlite_cur.execute("""
-        INSERT INTO scans (id, channel_id, user_id, tracking_raw, tracking_norm, result, scanned_at)
-        VALUES (1, 1, 1, 'FMPC0001', 'FMPC0001', 'OK', '2026-10-07 10:30:00');
+        INSERT INTO scans (id, channel_id, user_id, tracking_raw, tracking_norm, dispatch_date, result, scanned_at)
+        VALUES (1, 1, 1, 'FMPC0001', 'FMPC0001', '2026-10-07', 'OK', '2026-10-07 10:30:00');
     """)
     sqlite_cur.execute("""
-        INSERT INTO scan_events (id, scan_id, channel_id, user_id, tracking_raw, tracking_norm, outcome, scanned_at)
-        VALUES (1, 1, 1, 1, 'FMPC0001', 'FMPC0001', 'OK', '2026-10-07 10:30:00');
+        INSERT INTO scan_events (id, scan_id, channel_id, user_id, tracking_raw, tracking_norm, dispatch_date, outcome, scanned_at)
+        VALUES (1, 1, 1, 1, 'FMPC0001', 'FMPC0001', '2026-10-07', 'OK', '2026-10-07 10:30:00');
     """)
     sqlite_conn.commit()
     sqlite_conn.close()
