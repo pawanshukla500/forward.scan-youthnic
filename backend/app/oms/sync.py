@@ -12,6 +12,9 @@ Orders cancelled before an AWB existed are never stored.
   * crosscheck    - after every full refresh: OMSGuru's own pending report (order_aging) vs the local copy
   * exit check    - orders that left Packed / Ready-to-ship unscanned: what are they now? (spare credits only)
   * history       - one-time backfill of the previous days' AWBs, using only spare API credits
+  * audit         - hourly order-trail check: re-reads EVERY invoice of today's and yesterday's dispatch day and
+                    compares it AWB by AWB with the local copy; adds what is missing, updates statuses, and keeps
+                    "OMSGuru N AWBs = N here" per channel for Admin / Pending (spare API credits only)
   * cleanup       - drops orders older than RETAIN_ORDERS_DAYS, and scans older than SCAN_RETENTION_DAYS
   * channels      - sales-channel list, every 6h
 Scans keep their own copy of the order details, so pruning orders never loses dispatch history.
@@ -69,6 +72,10 @@ EXIT_CHECK_BATCH = 10
 EXIT_CHECK_IDLE_SECONDS = 120
 # A lookup method that missed this often for a channel, and never found anything, is skipped for it.
 LOOKUP_GIVE_UP = 3
+# Order-trail audit: every invoice of the last AUDIT_DAYS dispatch days, re-read every AUDIT_EVERY_SECONDS.
+AUDIT_EVERY_SECONDS = 3600
+AUDIT_DAYS = 2
+AUDIT_KEEP_DAYS = 10  # results kept for Admin / Pending
 # Status groups that belong in the working set (see mapping.status_group).
 WORKING_SET = ("OPEN",)
 
@@ -138,14 +145,14 @@ def _log_run(job: str, ok: bool, calls: int, records: int, msg: str) -> None:
 # job name -> SyncEngine coroutine method
 JOB_METHODS = {"channels": "refresh_channels", "sku_photos": "refresh_sku_photos", "invoices": "sync_invoices",
                "open_orders": "step_open_orders", "crosscheck": "crosscheck", "cancel_sweep": "cancel_sweep",
-               "exit_check": "exit_check", "history": "step_history", "cleanup": "cleanup"}
+               "exit_check": "exit_check", "history": "step_history", "cleanup": "cleanup", "audit": "step_audit"}
 
 
 class SyncEngine:
     def __init__(self) -> None:
         self.client: OmsClient | MockOmsClient = MockOmsClient() if settings.oms_use_mock else OmsClient()
         self.jobs = {n: JobStatus(n) for n in ("channels", "sku_photos", "invoices", "open_orders", "crosscheck",
-                                               "cancel_sweep", "exit_check", "history", "cleanup")}
+                                               "cancel_sweep", "audit", "exit_check", "history", "cleanup")}
         self._urgent = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._stop = False
@@ -202,6 +209,9 @@ class SyncEngine:
         elif job == "history":
             _set_state("history_backfill", None)
             _set_state("history_done", False)
+        elif job == "audit":
+            _set_state("trail_audit_progress", None)
+            _set_state("trail_audit_last_done", 0)
         loop = hub._loop  # noqa: SLF001
         if loop:
             loop.call_soon_threadsafe(self._urgent.set)
@@ -239,6 +249,8 @@ class SyncEngine:
                             "outcomes": dict(self.live_stats), "methods": self._lookup_summary(chan_names)},
             "crosscheck": _get_state("crosscheck"),
             "exit_check_pending": exit_pending,
+            "trail_audit": _get_state("trail_audit"),
+            "trail_audit_progress": _get_state("trail_audit_progress"),
         }
 
     def _lookup_summary(self, names: dict[int, str]) -> list[dict[str, Any]]:
@@ -336,6 +348,9 @@ class SyncEngine:
             return "open_orders"
         if self._due("cancel_sweep_last_done", settings.cancel_sweep_minutes * 60):
             return "cancel_sweep"
+        if ((_get_state("trail_audit_progress") or self._due("trail_audit_last_done", AUDIT_EVERY_SECONDS))
+                and self.client.state.estimated_remaining() >= HISTORY_MIN_CREDITS):
+            return "audit"
         if (self._due("exit_check_idle_at", EXIT_CHECK_IDLE_SECONDS)
                 and self.client.state.estimated_remaining() >= HISTORY_MIN_CREDITS):
             return "exit_check"
@@ -892,6 +907,99 @@ class SyncEngine:
             st["last_id"] = 0
         await _aset("history_backfill", st)
         return f"{label}: {n} AWBs (page {st['pages']})"
+
+    async def step_audit(self, job: _Job) -> str:
+        """Order-trail check, one page per tick on spare credits: re-read EVERY invoice of today's and yesterday's
+        dispatch day from OMSGuru and compare it AWB by AWB with the local copy. An AWB the incremental sync missed
+        (e.g. the AWB came after the invoice and the order left Ready-to-ship before the open-order refresh saw it)
+        is added, statuses are refreshed (cancellations leave pending), and the result per day and channel -
+        "OMSGuru 3,000 AWBs, 3,000 here" - is kept for Admin and the Pending page."""
+        st = await _aget("trail_audit_progress")
+        if not st:
+            today = today_dispatch_date()
+            counted_from = await asyncio.to_thread(tracking.start_date)
+            wins = []
+            for d in (today - timedelta(days=i) for i in range(AUDIT_DAYS)):
+                if counted_from is not None and d < counted_from:
+                    continue
+                a, b = day_bounds_utc(d)
+                wins.append([int(a.replace(tzinfo=timezone.utc).timestamp()),
+                             int(b.replace(tzinfo=timezone.utc).timestamp()) - 1, d.isoformat()])
+            st = {"windows": wins, "last_id": 0, "pages": 0, "tally": {}, "started": time.time()}
+        if not st["windows"]:
+            await _aset("trail_audit_progress", None)
+            await _aset("trail_audit_last_done", time.time())
+            return "nothing to check (before the tracking start date)"
+        start, end, label = st["windows"][0]
+        rows = await self.client.list_invoices(start, min(end, int(time.time())), last_id=st["last_id"],
+                                               min_credits=HISTORY_MIN_CREDITS)
+        job.calls += 1
+        oms, here, added = await asyncio.to_thread(self._audit_page, rows)
+        day = st["tally"].setdefault(label, {})
+        for cid in set(oms) | set(here):
+            c = day.setdefault(cid, {"oms": 0, "app": 0, "added": 0})
+            c["oms"] += oms[cid]
+            c["app"] += here[cid]
+            c["added"] += added[cid]
+        job.records = sum(added.values())
+        st["pages"] += 1
+        ids = [int(r.get("last_id") or 0) for r in rows if r.get("last_id") not in (None, "")]
+        if len(rows) >= settings.batch_limit and ids and max(ids) > st["last_id"]:
+            st["last_id"] = max(ids)
+            await _aset("trail_audit_progress", st)
+            return f"{label}: page {st['pages']}" + (f", {job.records} missing AWBs added" if job.records else "")
+        st["windows"].pop(0)
+        st["last_id"] = 0
+        result = await _aget("trail_audit") or {}
+        days = result.get("days") or {}
+        chans = day
+        days[label] = {
+            "checked_at": time.time(),
+            "complete": all(c["oms"] == c["app"] for c in chans.values()),
+            "oms": sum(c["oms"] for c in chans.values()),
+            "app": sum(c["app"] for c in chans.values()),
+            "added": sum(c["added"] for c in chans.values()),
+            "channels": chans,
+        }
+        for old in sorted(days)[:-AUDIT_KEEP_DAYS]:
+            days.pop(old)
+        await _aset("trail_audit", {"days": days, "checked_at": time.time()})
+        done = days[label]
+        if st["windows"]:
+            await _aset("trail_audit_progress", st)
+        else:
+            await _aset("trail_audit_progress", None)
+            await _aset("trail_audit_last_done", time.time())
+        cache.clear()
+        return (f"{label}: OMSGuru {done['oms']} AWBs, {done['app']} here"
+                + (f", {done['added']} missing AWBs added" if done["added"] else "")
+                + ("" if done["complete"] else " - NOT all stored, see Admin"))
+
+    def _audit_page(self, rows: list[dict]) -> tuple[Counter, Counter, Counter]:
+        """Per sales channel (id as text, "0" = unmapped): AWBs on this page in OMSGuru, in the local copy after
+        applying the page, and how many of those were missing before."""
+        parsed = {}
+        for r in rows:
+            d = parse_order_row(r, "invoices")
+            if d["tracking_norm"]:
+                parsed[d["tracking_norm"]] = d
+        if not parsed:
+            return Counter(), Counter(), Counter()
+        with session_scope() as db:
+            before = set(db.scalars(select(OmsOrder.tracking_norm).where(OmsOrder.tracking_norm.in_(list(parsed)))))
+        self._apply_rows(rows, "invoices")
+        with session_scope() as db:
+            after = set(db.scalars(select(OmsOrder.tracking_norm).where(OmsOrder.tracking_norm.in_(list(parsed)))))
+            matcher = ChannelMatcher(db.scalars(select(Channel)))
+            oms, here, added = Counter(), Counter(), Counter()
+            for awb, d in parsed.items():
+                cid = str(matcher.match(d["channel_label"], d["company"]) or 0)
+                oms[cid] += 1
+                if awb in after:
+                    here[cid] += 1
+                    if awb not in before:
+                        added[cid] += 1
+        return oms, here, added
 
     async def cancel_sweep(self, job: _Job) -> str:
         """Find Packed / Ready-to-ship orders that were cancelled. Cancelled orders that never reached the
