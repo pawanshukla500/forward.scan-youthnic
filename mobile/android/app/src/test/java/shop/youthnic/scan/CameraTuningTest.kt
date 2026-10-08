@@ -69,4 +69,13 @@ class CameraTuningTest {
         assertFalse(guard.inCooldown(t0 + 2200))
         assertTrue("a different code after the cooldown still scans", guard.shouldProcess("AWB2222222", t0 + 2300))
     }
+
+    @Test
+    fun clockJumpingBackDoesNotFreezeTheCooldown() {
+        val guard = DuplicateGuard(sameCodeSuppressMs = 8000L, anyCodeCooldownMs = 2200L)
+        val t0 = 100_000L
+        guard.markEmitted("AWB1111111", t0)
+        assertFalse(guard.inCooldown(t0 - 60_000))  // the phone clock was corrected backwards
+        assertTrue(guard.shouldProcess("AWB3333333", t0 - 60_000))
+    }
 }

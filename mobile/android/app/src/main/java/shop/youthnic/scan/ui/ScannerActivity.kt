@@ -31,6 +31,7 @@ import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraState
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
@@ -41,6 +42,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.widget.ImageViewCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
@@ -85,6 +87,7 @@ import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class ScannerActivity : AppCompatActivity() {
 
@@ -113,8 +116,8 @@ class ScannerActivity : AppCompatActivity() {
     private var boundSharp = false
     /** This phone rejected the frame-rate cap once: open the camera without it from now on. */
     private var fpsCapFailed = false
-    /** A dialog or sheet covers the camera (read on the camera thread). */
-    @Volatile private var analysisBlocked = false
+    /** Dialogs / sheets currently covering the camera (read on the camera thread). */
+    private val openDialogs = AtomicInteger(0)
     private var lastAnalyzedAt = 0L
     private var lastActivityAt = 0L
     private var idleJob: Job? = null
@@ -439,14 +442,22 @@ class ScannerActivity : AppCompatActivity() {
             cam.cameraInfo.cameraState.removeObservers(this)
             if (fps != null) {
                 cam.cameraInfo.cameraState.observe(this) { state ->
-                    if (state.error != null && !fpsCapFailed && cameraRunning) {
+                    val code = state.error?.code
+                    val fromCap = code == CameraState.ERROR_STREAM_CONFIG || code == CameraState.ERROR_CAMERA_FATAL_ERROR
+                    if (fromCap && !fpsCapFailed && cameraRunning) {
                         fpsCapFailed = true
                         bindCameraUseCases()
                     }
                 }
             }
         } catch (e: Exception) {
+            cameraRunning = false
+            camera = null
+            setTorchUi(false)
+            updateKeepScreenOn()
             binding.tvScannerHint.text = "Camera bind error: ${e.message}"
+            binding.tvCameraPausedSub.text = e.message ?: ""
+            binding.layoutCameraPaused.visibility = View.VISIBLE  // "Tap to scan" retries
         }
     }
 
@@ -521,11 +532,19 @@ class ScannerActivity : AppCompatActivity() {
 
     /** Dialogs and sheets cover the camera: stop reading barcodes behind them (no accidental scan, less CPU). */
     private fun blockAnalysisWhileShown(dialog: Dialog, onDismiss: () -> Unit = {}) {
-        analysisBlocked = true
+        openDialogs.incrementAndGet()
         dialog.setOnDismissListener {
-            analysisBlocked = false
-            noteActivity()
+            if (openDialogs.decrementAndGet() < 0) openDialogs.set(0)  // (updateAndGet needs API 24)
             onDismiss()
+            // Touches on a sheet go to its own window, not to dispatchTouchEvent: someone reading the Pending list
+            // for 2+ minutes is not idle. If the idle pause closed the camera behind it, open it again.
+            if (!cameraRunning && cameraProvider != null && hasCameraPermission() &&
+                lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            ) {
+                resumeCamera()
+            } else {
+                noteActivity()
+            }
         }
     }
 
@@ -537,7 +556,7 @@ class ScannerActivity : AppCompatActivity() {
 
         // Battery: read at most every ANALYZE_EVERY_MS, and not at all while a scan is being sent, right after
         // a scan (every code is ignored during the cooldown anyway) or behind a dialog.
-        if (mediaImage == null || scanner == null || isRequestInFlight.get() || analysisBlocked ||
+        if (mediaImage == null || scanner == null || isRequestInFlight.get() || openDialogs.get() > 0 ||
             now - lastAnalyzedAt < CameraTuning.ANALYZE_EVERY_MS || duplicateGuard.inCooldown()
         ) {
             imageProxy.close()
