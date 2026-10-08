@@ -210,7 +210,7 @@ function Overview({ notify, go }: { notify: Notify; go: (t: Tab) => void }) {
     },
     {
       name: "Users & roles",
-      desc: "Scanner, supervisor and admin access",
+      desc: "Scanner, supervisor, manager and admin access",
       meta: "Team members",
       icon: <UsersIcon className="size-5" />,
       onClick: () => usersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
@@ -274,7 +274,9 @@ function Overview({ notify, go }: { notify: Notify; go: (t: Tab) => void }) {
             <SystemCard
               icon={<Database className="size-5" />}
               title="Database & backups"
-              state={bkTone === "good" ? "Protected" : bkTone === "warn" ? "Only on this PC" : bkTone === "muted" ? "No backups" : "At risk"}
+              state={
+                bkTone === "good" ? "Protected" : bkTone === "warn" ? (bk?.backend === "postgresql" ? "Only on this server" : "Only on this PC") : bkTone === "muted" ? "No backups" : "At risk"
+              }
               tone={bkTone}
               meta={backupMeta(bk)}
             />
@@ -438,7 +440,7 @@ interface UserRow {
   password_changed_at: string | null;
 }
 
-const ROLE_LABEL: Record<Role, string> = { scanner: "Scan operator", supervisor: "Supervisor", admin: "Admin" };
+const ROLE_LABEL: Record<Role, string> = { scanner: "Scan operator", supervisor: "Supervisor", manager: "Manager", admin: "Admin" };
 
 /** 12 characters without look-alikes (0/O, 1/l/I), always with letters and digits - easy to read out to someone. */
 function generatePassword(): string {
@@ -511,7 +513,8 @@ function PasswordInput({ id, value, onChange }: { id: string; value: string; onC
   );
 }
 
-function CreateUser({ onClose, onCreated, notify }: { onClose: () => void; onCreated: () => void; notify: Notify }) {
+/** [scannerOnly]: a manager or supervisor - the new account is always a scan operator. */
+function CreateUser({ onClose, onCreated, notify, scannerOnly }: { onClose: () => void; onCreated: () => void; notify: Notify; scannerOnly: boolean }) {
   const [form, setForm] = useState({ full_name: "", email: "", username: "", password: "", role: "scanner" as Role, must_change_password: true });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -539,7 +542,11 @@ function CreateUser({ onClose, onCreated, notify }: { onClose: () => void; onCre
     }
   }
   return (
-    <Dialog title="Create team member" sub="Add a person and choose what they can do in ForwardScan." onClose={onClose}>
+    <Dialog
+      title={scannerOnly ? "Add scanner ID" : "Create team member"}
+      sub={scannerOnly ? "A login for a packer: scan only. Ask an admin for supervisor or manager access." : "Add a person and choose what they can do in ForwardScan."}
+      onClose={onClose}
+    >
       <form onSubmit={(e) => void submit(e)} className="space-y-4" noValidate>
         <Field label="Full name">
           <input id="nu-name" autoFocus className={inputCls} value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} placeholder="e.g. Ravi Kumar" />
@@ -561,11 +568,16 @@ function CreateUser({ onClose, onCreated, notify }: { onClose: () => void; onCre
           <PasswordInput id="nu-password" value={form.password} onChange={(password) => setForm({ ...form, password })} />
         </Field>
         <Field label="Role">
-          <select id="nu-role" className={inputCls} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })}>
-            <option value="scanner">Scan operator - scan only</option>
-            <option value="supervisor">Supervisor - reports, exports, remove scans</option>
-            <option value="admin">Admin - everything incl. users and settings</option>
-          </select>
+          {scannerOnly ? (
+            <p className={cx(inputCls, "flex items-center text-ink-2")}>Scan operator - scan only</p>
+          ) : (
+            <select id="nu-role" className={inputCls} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })}>
+              <option value="scanner">Scan operator - scan only</option>
+              <option value="supervisor">Supervisor - reports, exports, remove scans, scanner IDs</option>
+              <option value="manager">Manager - same as supervisor (warehouse manager)</option>
+              <option value="admin">Admin - everything incl. users and settings</option>
+            </select>
+          )}
         </Field>
         <label className="flex cursor-pointer items-start gap-2 text-sm text-ink-2">
           <input id="nu-must" type="checkbox" className="mt-0.5 size-4" checked={form.must_change_password} onChange={(e) => setForm({ ...form, must_change_password: e.target.checked })} />
@@ -581,7 +593,7 @@ function CreateUser({ onClose, onCreated, notify }: { onClose: () => void; onCre
             Cancel
           </Button>
           <Button type="submit" variant="primary" loading={busy}>
-            Create user
+            {scannerOnly ? "Add scanner" : "Create user"}
           </Button>
         </div>
       </form>
@@ -691,6 +703,9 @@ function ResetPassword({ u, onClose, onSaved, notify }: { u: UserRow; onClose: (
 function Users({ notify }: { notify: Notify }) {
   const { user: me } = useAuth();
   const isAdmin = me?.role === "admin";
+  // managers and supervisors: add scanner IDs, reset a scanner's password, disable / enable a scanner
+  const isStaff = isAdmin || me?.role === "manager" || me?.role === "supervisor";
+  const canManage = (u: UserRow) => isAdmin || (isStaff && u.role === "scanner");
   const [users, setUsers] = useState<UserRow[] | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<UserRow | null>(null);
@@ -716,11 +731,13 @@ function Users({ notify }: { notify: Notify }) {
           <h2 id="team-title" className="mt-1 text-[17px] font-bold">
             Team members
           </h2>
-          <p className="text-sm text-muted">Who can sign in, what they can do, and their passwords.</p>
+          <p className="text-sm text-muted">
+            {isAdmin ? "Who can sign in, what they can do, and their passwords." : "Add scanner IDs, reset a scanner's password or disable a scanner who left."}
+          </p>
         </div>
-        {isAdmin && (
+        {isStaff && (
           <Button variant="primary" onClick={() => setCreating(true)}>
-            <Plus className="size-4" aria-hidden /> Create user
+            <Plus className="size-4" aria-hidden /> {isAdmin ? "Create user" : "Add scanner"}
           </Button>
         )}
       </div>
@@ -736,7 +753,7 @@ function Users({ notify }: { notify: Notify }) {
                 <th scope="col" className="px-3 py-2.5">Last sign-in</th>
                 <th scope="col" className="px-3 py-2.5">Password</th>
                 <th scope="col" className="px-3 py-2.5">Status</th>
-                {isAdmin && <th scope="col" className="px-3 py-2.5"><span className="sr-only">Actions</span></th>}
+                {isStaff && <th scope="col" className="px-3 py-2.5"><span className="sr-only">Actions</span></th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -769,6 +786,7 @@ function Users({ notify }: { notify: Notify }) {
                       >
                         <option value="scanner">Scan operator</option>
                         <option value="supervisor">Supervisor</option>
+                        <option value="manager">Manager</option>
                         <option value="admin">Admin</option>
                       </select>
                     ) : (
@@ -796,16 +814,20 @@ function Users({ notify }: { notify: Notify }) {
                       {u.is_active ? "Active" : "Disabled"}
                     </span>
                   </td>
-                  {isAdmin && (
+                  {isStaff && (
                     <td className="px-3 py-3">
                       <div className="flex justify-end gap-1">
-                        <Button size="sm" variant="ghost" title="Edit name / email" aria-label={`Edit ${u.username}`} onClick={() => setEditing(u)}>
-                          <Pencil className="size-4" aria-hidden />
-                        </Button>
-                        <Button size="sm" variant="ghost" title="Reset password" aria-label={`Reset password for ${u.username}`} onClick={() => setResetting(u)}>
-                          <KeyRound className="size-4" aria-hidden />
-                        </Button>
-                        {u.id !== me?.id && (
+                        {isAdmin && (
+                          <Button size="sm" variant="ghost" title="Edit name / email" aria-label={`Edit ${u.username}`} onClick={() => setEditing(u)}>
+                            <Pencil className="size-4" aria-hidden />
+                          </Button>
+                        )}
+                        {canManage(u) && (
+                          <Button size="sm" variant="ghost" title="Reset password" aria-label={`Reset password for ${u.username}`} onClick={() => setResetting(u)}>
+                            <KeyRound className="size-4" aria-hidden />
+                          </Button>
+                        )}
+                        {canManage(u) && u.id !== me?.id && (
                           <Button
                             size="sm"
                             variant="ghost"
@@ -825,7 +847,7 @@ function Users({ notify }: { notify: Notify }) {
           </table>
         </div>
       )}
-      {creating && <CreateUser onClose={() => setCreating(false)} onCreated={() => void load()} notify={notify} />}
+      {creating && <CreateUser onClose={() => setCreating(false)} onCreated={() => void load()} notify={notify} scannerOnly={!isAdmin} />}
       {editing && <EditUser u={editing} onClose={() => setEditing(null)} onSaved={() => void load()} notify={notify} />}
       {resetting && <ResetPassword u={resetting} onClose={() => setResetting(null)} onSaved={() => void load()} notify={notify} />}
     </section>
@@ -1157,11 +1179,22 @@ function fmtDay(iso: string) {
   return new Date(iso + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+interface OffsiteCopy {
+  remote: string;
+  ok: boolean;
+  at: string;
+  file?: string;
+  checked?: string;
+  error?: string;
+}
+
 interface BackupStatus {
   enabled: boolean;
   reason?: string;
+  backend?: "sqlite" | "postgresql";
   dir?: string;
   mirror_dir?: string | null;
+  offsite?: { remote: string | null; full: OffsiteCopy | null; recent: OffsiteCopy | null; keep_days: number };
   full?: { started: string; ok: boolean; bytes: number; file: string; total_s: number; mirror?: { dir: string; ok: boolean } | null } | null;
   full_age_hours?: number | null;
   recent?: { started: string; ok: boolean; bytes: number; file: string; seconds: number } | null;
@@ -1174,8 +1207,8 @@ interface BackupStatus {
   problems: string[];
 }
 
-// The "no second copy" warning is shown amber; every other backup problem is red.
-const ONLY_LOCAL = "only on this PC";
+// "Backups are only on this PC's / server's disk" (no second copy yet) is amber; every other backup problem is red.
+const ONLY_LOCAL = "only on this";
 
 function backupTone(b: BackupStatus | null): "good" | "warn" | "crit" | "muted" {
   if (!b) return "muted";
@@ -1193,12 +1226,25 @@ function hoursAgo(hours: number | null | undefined): string {
 function backupMeta(b: BackupStatus | null): string {
   if (!b) return "...";
   if (!b.enabled) return b.reason ?? "Automatic backups are off";
-  return `Full backup ${hoursAgo(b.full_age_hours)} · recent scans ${hoursAgo(b.recent_age_hours)}`;
+  const off = b.offsite?.full?.ok ? ` · offsite ${hoursAgo(ageHours(b.offsite.full.at))}` : "";
+  return `Full backup ${hoursAgo(b.full_age_hours)} · recent scans ${hoursAgo(b.recent_age_hours)}${off}`;
+}
+
+function ageHours(iso: string | undefined): number | null {
+  return iso ? (Date.now() - new Date(iso).getTime()) / 3600000 : null;
+}
+
+/** "gdrive:Forward Scan Backups/pg-forward_scan/daily" -> "Google Drive · Forward Scan Backups/pg-forward_scan/daily" */
+function remoteLabel(remote: string): string {
+  const [name, ...rest] = remote.split(":");
+  const path = rest.join(":");
+  return name === "gdrive" ? `Google Drive · ${path}` : remote;
 }
 
 const mb = (n: number | null | undefined) => (n ? `${(n / 1e6).toFixed(n > 1e8 ? 0 : 1)} MB` : "-");
 
 function BackupCard({ notify }: { notify: Notify }) {
+  const { user: me } = useAuth();
   const [b, setB] = useState<BackupStatus | null>(null);
   const load = useCallback(() => api<BackupStatus>("/api/admin/backups").then(setB).catch(() => setB(null)), []);
   useEffect(() => {
@@ -1230,7 +1276,7 @@ function BackupCard({ notify }: { notify: Notify }) {
           <h2 className="text-sm font-semibold">Database backups</h2>
           <p className="text-xs text-muted">{backupMeta(b)}</p>
         </div>
-        {b.enabled && (
+        {b.enabled && me?.role === "admin" && (
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={() => void run("recent")} disabled={busy}>
               Copy recent scans now
@@ -1260,11 +1306,29 @@ function BackupCard({ notify }: { notify: Notify }) {
           <div className="text-xs text-muted">{b.disk_free_gb !== null && b.disk_free_gb !== undefined ? `${b.disk_free_gb} GB free on the disk` : ""}</div>
         </div>
         <div className="min-w-0">
-          <div className="text-xs text-muted">Second copy (other disk / NAS / USB)</div>
-          <div className={cx("font-semibold", !b.mirror_dir && "text-warn-ink")}>{b.mirror_dir ? "On" : "Not set"}</div>
-          <div className="truncate text-xs text-muted" title={b.mirror_dir ?? undefined}>
-            {b.mirror_dir ?? "set BACKUP_MIRROR_DIR in .env"}
-          </div>
+          <div className="text-xs text-muted">Offsite copy (daily, checked)</div>
+          {b.offsite?.remote ? (
+            <>
+              <div className={cx("font-semibold", b.offsite.full && !b.offsite.full.ok && "text-crit-ink")}>
+                {!b.offsite.full ? "Waiting for the first upload" : b.offsite.full.ok ? `Uploaded ${hoursAgo(ageHours(b.offsite.full.at))}` : "Upload failed"}
+              </div>
+              <div className="truncate text-xs text-muted" title={b.offsite.full?.remote ?? b.offsite.remote}>
+                {remoteLabel(b.offsite.full?.remote ?? b.offsite.remote)} · kept {b.offsite.keep_days} days
+              </div>
+            </>
+          ) : b.mirror_dir ? (
+            <>
+              <div className="font-semibold">Second disk</div>
+              <div className="truncate text-xs text-muted" title={b.mirror_dir}>
+                {b.mirror_dir}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="font-semibold text-warn-ink">Not set</div>
+              <div className="truncate text-xs text-muted">README: Backups &amp; restore - Offsite copy</div>
+            </>
+          )}
         </div>
       </div>
       {b.problems.length > 0 && (
@@ -1278,8 +1342,18 @@ function BackupCard({ notify }: { notify: Notify }) {
       )}
       {b.enabled && (
         <p className="border-t border-line px-4 py-3 text-xs text-muted">
-          Saved in <span className="font-mono">{b.dir}</span>. To restore: close the server, then from the project folder run{" "}
-          <span className="font-mono">.venv\Scripts\python backend\restore_backup.py --latest --yes</span> (README: Backups &amp; restore).
+          Saved in <span className="font-mono">{b.dir}</span>.{" "}
+          {b.backend === "postgresql" ? (
+            <>
+              To restore: stop the app container and run <span className="font-mono">restore_backup.py --latest --yes</span> in a one-off container
+              (README: Backups &amp; restore).
+            </>
+          ) : (
+            <>
+              To restore: close the server, then from the project folder run{" "}
+              <span className="font-mono">.venv\Scripts\python backend\restore_backup.py --latest --yes</span> (README: Backups &amp; restore).
+            </>
+          )}
         </p>
       )}
     </Card>

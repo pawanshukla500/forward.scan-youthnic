@@ -22,7 +22,8 @@ interface AuthCtx {
 
 const Auth = createContext<AuthCtx>({ user: null, setUser: () => {}, logout: async () => {} });
 export const useAuth = () => useContext(Auth);
-export const isSupervisor = (u: User | null) => !!u && (u.role === "admin" || u.role === "supervisor");
+/** Staff: admin, manager or supervisor (reports, exports, removing scans, scanner accounts). */
+export const isSupervisor = (u: User | null) => !!u && (u.role === "admin" || u.role === "manager" || u.role === "supervisor");
 
 function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);

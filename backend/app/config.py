@@ -59,7 +59,10 @@ def _default_backup_dir() -> str:
     if url.startswith("sqlite:///"):
         db = Path(url[len("sqlite:///"):])
         return str(db.parent / "backups" / db.stem)
-    return "backups/auto"
+    # PostgreSQL: under data/ - the folder the server keeps across deploys (docker-compose mounts ./data).
+    # The old default "backups/auto" sat inside the container, so every deploy threw the backups away.
+    name = url.rsplit("/", 1)[-1].split("?", 1)[0] or "postgres"
+    return str(ROOT_DIR / "data" / "backups" / f"pg-{name}")
 
 
 def _path_setting(name: str, default: str) -> str:
@@ -124,7 +127,7 @@ class Settings:
 
     database_url: str = field(default_factory=_database_url)
 
-    # --- automatic backups (SQLite only; see services/backup.py) ---
+    # --- automatic backups (SQLite and PostgreSQL; see services/backup.py) ---
     backup_enabled: bool = _bool("BACKUP_ENABLED", True)
     backup_dir: str = field(default_factory=lambda: _path_setting("BACKUP_DIR", _default_backup_dir()))
     # A second place on ANOTHER physical disk (NAS share, USB disk, another PC). Empty = backups stay on this PC.
@@ -135,6 +138,14 @@ class Settings:
     backup_keep_daily: int = max(1, _int("BACKUP_KEEP_DAILY", 14))
     backup_keep_monthly: int = max(0, _int("BACKUP_KEEP_MONTHLY", 12))
     backup_keep_recent: int = max(4, _int("BACKUP_KEEP_RECENT", 96))
+    # Offsite copy with rclone (e.g. "gdrive:Forward Scan Backups"). Empty = automatic: the "gdrive" remote when
+    # data/rclone/rclone.conf has one (set up once on the server, kept across deploys), else no offsite copy.
+    backup_offsite_remote: str = os.getenv("BACKUP_OFFSITE_REMOTE", "").strip()
+    backup_rclone_config: str = field(
+        default_factory=lambda: _path_setting("RCLONE_CONFIG", str(ROOT_DIR / "data" / "rclone" / "rclone.conf"))
+    )
+    backup_offsite_keep_days: int = max(7, _int("BACKUP_OFFSITE_KEEP_DAYS", 60))  # daily copies kept in the cloud
+    backup_offsite_recent_minutes: int = max(15, _int("BACKUP_OFFSITE_RECENT_MINUTES", 60))  # recent scans to the cloud
 
     secret_key: str = os.getenv("APP_SECRET_KEY", "")
     token_hours: int = _int("SESSION_HOURS", 14)

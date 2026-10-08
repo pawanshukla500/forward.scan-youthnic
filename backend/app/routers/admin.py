@@ -69,10 +69,21 @@ def list_users(db: Session = Depends(get_db), _: User = Depends(require_supervis
     return {"users": [_user_out(u) for u in db.scalars(select(User).order_by(User.full_name, User.username))]}
 
 
+# Managers and supervisors look after scanner accounts only: create them, reset a forgotten password, disable
+# someone who left. Everything else about users (other roles, names, emails, role changes) stays with admins.
+SCANNER_ONLY = "Managers and supervisors can only manage scanner accounts - ask an admin"
+
+
+def _may_manage(me: User, target_role: str) -> None:
+    if me.role != "admin" and target_role != "scanner":
+        raise HTTPException(403, SCANNER_ONLY)
+
+
 @router.post("/users")
-def create_user(body: UserIn, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def create_user(body: UserIn, db: Session = Depends(get_db), me: User = Depends(require_supervisor)):
     if body.role not in ROLES:
         raise HTTPException(400, f"Role must be one of {', '.join(ROLES)}")
+    _may_manage(me, body.role)
     uname = body.username.strip().lower()
     if db.scalar(select(User).where(User.username == uname)):
         raise HTTPException(400, "Username already exists")
@@ -87,10 +98,15 @@ def create_user(body: UserIn, db: Session = Depends(get_db), _: User = Depends(r
 
 
 @router.patch("/users/{user_id}")
-def patch_user(user_id: int, body: UserPatch, db: Session = Depends(get_db), me: User = Depends(require_admin)):
+def patch_user(user_id: int, body: UserPatch, db: Session = Depends(get_db), me: User = Depends(require_supervisor)):
     u = db.get(User, user_id)
     if not u:
         raise HTTPException(404, "User not found")
+    if me.role != "admin":
+        _may_manage(me, u.role)
+        if body.role is not None or body.full_name is not None or body.email is not None:
+            raise HTTPException(403, "Managers and supervisors can reset a scanner's password or disable it - "
+                                     "ask an admin to change names, emails or roles")
     was_active_admin = u.role == "admin" and u.is_active
     if body.role is not None:
         if body.role not in ROLES:

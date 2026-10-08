@@ -124,7 +124,8 @@ function UserRow() {
   const [changing, setChanging] = useState(false);
   const [changed, setChanged] = useState(false);
   const name = user?.full_name || user?.username || "";
-  const role = user?.role === "admin" ? "Operations Admin" : user?.role === "supervisor" ? "Warehouse Manager" : "Scan Operator";
+  const role =
+    user?.role === "admin" ? "Operations Admin" : user?.role === "manager" ? "Warehouse Manager" : user?.role === "supervisor" ? "Supervisor" : "Scan Operator";
   useEffect(() => {
     if (!changed) return;
     const t = window.setTimeout(() => setChanged(false), 3500);
