@@ -977,7 +977,14 @@ class SyncEngine:
 
     def _audit_page(self, rows: list[dict]) -> tuple[Counter, Counter, Counter]:
         """Per sales channel (id as text, "0" = unmapped): AWBs on this page in OMSGuru, in the local copy after
-        applying the page, and how many of those were missing before."""
+        applying the page, and how many of those were missing before. Only rows of the dispatch warehouse(s) synced
+        here count: Amazon FBA / marketplace fulfilment centres (DEL4, BLR8 ...) ship themselves and must never
+        turn into "pending" here (7 Oct 2026: 92 FBA invoices in OMSGuru's list, rightly not in the app)."""
+        with session_scope() as db:
+            mine = {(v or "").strip().lower() for w in db.scalars(select(Warehouse).where(Warehouse.sync_enabled.is_(True)))
+                    for v in (w.name, w.alias) if (v or "").strip()}
+        if mine:
+            rows = [r for r in rows if str(r.get("warehouse") or "").strip().lower() in mine]
         parsed = {}
         for r in rows:
             d = parse_order_row(r, "invoices")

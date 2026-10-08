@@ -82,6 +82,18 @@ def test_audit_finds_every_awb_and_adds_the_ones_the_sync_missed(env):
     assert "AUDMISS0001" in {r["awb"] for r in pend["rows"]}
 
 
+def test_audit_ignores_marketplace_fulfilment_warehouses(env):
+    """Amazon FBA / Flipkart FA orders ship from the marketplace's own warehouse: never pending here."""
+    c, eng = env
+    row = _today_row("AUDFBA00001", "ODAUDFBA1", "Shipped")
+    row["warehouse"] = "DEL4"
+    eng.client.add_order(row)
+    audit_round(eng)
+    assert _local("AUDFBA00001") is None
+    t = sm._get_state("trail_audit")["days"]
+    assert all(d["complete"] for d in t.values())
+
+
 def test_audit_refreshes_statuses_cancellation_leaves_pending(env):
     c, eng = env
     eng.client.add_order(_today_row("AUDCANC0001", "ODAUDIT2"))
