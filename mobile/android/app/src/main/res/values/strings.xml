@@ -215,4 +215,8 @@
     <string name="action_old_label">Old label - OMSGuru made a new AWB for this order. Print the new label and scan that</string>
     <string name="scan_not_counted_format">Not counted · %1$s</string>
     <string name="scanned_today_not_found_format">%1$s scanned today · %2$s not found</string>
+    <string name="verdict_not_saved">NOT SAVED - SERVER PROBLEM</string>
+    <string name="signal_not_saved">NOT SAVED</string>
+    <string name="not_saved_message">The server had a problem - this scan was NOT saved</string>
+    <string name="action_not_saved">Scan the same packet again in a moment</string>
 </resources>

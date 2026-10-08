@@ -75,7 +75,7 @@ def reopen_manifest(manifest_id: int, db: Session = Depends(get_db), user: User 
 
 
 @router.get("/manifests/{manifest_id}/export.xlsx")
-def export_manifest(manifest_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def export_manifest(manifest_id: int, db: Session = Depends(get_db), user: User = Depends(require_supervisor)):
     m = db.get(Manifest, manifest_id)
     if not m:
         raise HTTPException(404, "Manifest not found")
