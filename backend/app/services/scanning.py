@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from sqlalchemy import String, func, literal, or_, select
+from sqlalchemy import String, and_, case, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,28 @@ log = logging.getLogger("scan")
 #   success : green, short beep        (accepted)
 #   warning : amber, double beep       (accepted but needs a look)
 #   error   : red, long buzz           (rejected, not counted)
+
+
+# What counts as a scan (user, 9 Oct 2026: "count the successful scans only"): verified against OMSGuru - OK, or
+# WARN (saved, check the packet). A "Not found" (UNVERIFIED) scan is flagged and counted on its own until the order
+# syncs and it turns OK by itself; the one-time "shipped in OMSGuru" marks keep AWBs out of Pending but are not scans
+# by the team.
+COUNTED_RESULTS = ("OK", "WARN")
+
+
+def is_mark():
+    """SQL: the scan row is a one-time "shipped in OMSGuru" mark, not a scan."""
+    return func.coalesce(Scan.flags, "").like(f"%{MARKED_SHIPPED_FLAG}%")
+
+
+def counted():
+    """SQL: the scan counts as scanned (successful, by the team)."""
+    return and_(Scan.result.in_(COUNTED_RESULTS), ~is_mark())
+
+
+def kind_of():
+    """SQL: 'scanned' | 'not_found' | 'marked' per scan row, for GROUP BY."""
+    return case((is_mark(), "marked"), (Scan.result == "UNVERIFIED", "not_found"), else_="scanned")
 
 
 @dataclass

@@ -13,7 +13,7 @@ from ..models import STAFF_ROLES, Channel, Manifest, OmsOrder, Scan, User
 from ..oms.mapping import normalize_tracking
 from ..oms.sync import get_engine
 from ..security import current_user
-from ..services import cache, reconcile, tracking
+from ..services import cache, reconcile, scanning, tracking
 from ..services.realtime import hub
 from ..services.scanning import _event, find_orders, order_payload, process_scan, scan_payload
 from ..timeutil import today_dispatch_date, utcnow
@@ -45,7 +45,8 @@ def list_channels(db: Session = Depends(get_db), user: User = Depends(current_us
     day = today_dispatch_date()
     chans = list(db.scalars(select(Channel).where(Channel.scan_enabled.is_(True)).order_by(Channel.sort_order, Channel.name)))
     counts = dict(
-        db.execute(select(Scan.channel_id, func.count(Scan.id)).where(Scan.dispatch_date == day).group_by(Scan.channel_id)).all()
+        db.execute(select(Scan.channel_id, func.count(Scan.id)).where(Scan.dispatch_date == day, scanning.counted())
+                   .group_by(Scan.channel_id)).all()
     )
     pend = pending_counts(db)
     from ..services.reconcile import summary_cached
@@ -123,7 +124,8 @@ def recent_scans(
     if channel_id:
         stats_q = stats_q.where(Scan.channel_id == channel_id)
     stats = dict(db.execute(stats_q.group_by(Scan.result)).all())
-    mine_count = db.scalar(select(func.count(Scan.id)).where(Scan.dispatch_date == day, Scan.user_id == user.id)) or 0
+    mine_count = db.scalar(select(func.count(Scan.id)).where(Scan.dispatch_date == day, Scan.user_id == user.id,
+                                                             scanning.counted())) or 0
     return {"scans": [scan_payload(s) for s in rows], "stats": stats, "mine_today": mine_count}
 
 
@@ -182,13 +184,15 @@ def _scan_context(db: Session, channel: Channel, limit: int) -> dict:
     day = today_dispatch_date()
     yday = day - timedelta(days=1)
     by_result = dict(db.execute(
-        select(Scan.result, func.count(Scan.id)).where(Scan.dispatch_date == day, Scan.channel_id == channel_id).group_by(Scan.result)
+        select(Scan.result, func.count(Scan.id))
+        .where(Scan.dispatch_date == day, Scan.channel_id == channel_id, ~scanning.is_mark()).group_by(Scan.result)
     ).all())
-    scanned = sum(by_result.values())
+    scanned = sum(n for r, n in by_result.items() if r in scanning.COUNTED_RESULTS)  # "Not found" apart
     alerts = db.scalar(select(func.count(Scan.id)).where(Scan.dispatch_date == day, Scan.channel_id == channel_id, Scan.alert != "")) or 0
     flagged_manual = db.scalar(select(func.count(Scan.id)).where(
         Scan.dispatch_date == day, Scan.channel_id == channel_id, Scan.flags.like("%FLAGGED%"))) or 0
-    yesterday = db.scalar(select(func.count(Scan.id)).where(Scan.dispatch_date == yday, Scan.channel_id == channel_id)) or 0
+    yesterday = db.scalar(select(func.count(Scan.id)).where(Scan.dispatch_date == yday, Scan.channel_id == channel_id,
+                                                            scanning.counted())) or 0
     from ..models import ScanEvent
     rejected = db.scalar(select(func.count(ScanEvent.id)).where(
         ScanEvent.dispatch_date == day, ScanEvent.channel_id == channel_id,
@@ -235,6 +239,7 @@ def _scan_context(db: Session, channel: Channel, limit: int) -> dict:
         "channel": channel_payload(channel),
         "stats": {"scanned": scanned, "ok": by_result.get("OK", 0),
                   "flagged": by_result.get("WARN", 0) + by_result.get("UNVERIFIED", 0) + alerts,
+                  "not_found": by_result.get("UNVERIFIED", 0),
                   "flagged_manual": flagged_manual, "alerts": alerts, "rejected": rejected, "yesterday": yesterday},
         "awb": counts,
         "queue": queue,

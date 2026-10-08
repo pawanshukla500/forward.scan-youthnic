@@ -11,7 +11,7 @@ from ..db import get_db
 from ..models import Channel, Scan, ScanEvent, User
 from ..oms.sync import _get_state
 from ..security import current_user
-from ..services import reconcile
+from ..services import reconcile, scanning
 from ..services.exports import BUCKET_LABELS, channel_summary_xlsx, reconcile_xlsx
 from ..timeutil import today_dispatch_date
 from .reports import XLSX, _file, _parse_day
@@ -67,14 +67,19 @@ def _channel_summary(db: Session, df: date, dt: date, group: str):
         raise HTTPException(400, "group must be day or month")
     key = (lambda d: d.strftime("%Y-%m")) if group == "month" else (lambda d: d.isoformat())
     cells: dict[tuple[str, int], dict[str, int]] = {}
-    for d, cid, result, n in db.execute(
-        select(Scan.dispatch_date, Scan.channel_id, Scan.result, func.count(Scan.id))
+    kind = scanning.kind_of()
+    for d, cid, result, k, n in db.execute(
+        select(Scan.dispatch_date, Scan.channel_id, Scan.result, kind, func.count(Scan.id))
         .where(Scan.dispatch_date >= df, Scan.dispatch_date <= dt)
-        .group_by(Scan.dispatch_date, Scan.channel_id, Scan.result)
+        .group_by(Scan.dispatch_date, Scan.channel_id, Scan.result, kind)
     ):
         c = cells.setdefault((key(d), cid), {})
+        if k == "marked":  # one-time "shipped in OMSGuru" marks: not scans by the team
+            c["marked"] = c.get("marked", 0) + n
+            continue
         c[result] = c.get(result, 0) + n
-        c["scanned"] = c.get("scanned", 0) + n
+        if result in scanning.COUNTED_RESULTS:  # successful scans only; "Not found" = UNVERIFIED, apart
+            c["scanned"] = c.get("scanned", 0) + n
     for d, cid, n in db.execute(
         select(Scan.dispatch_date, Scan.channel_id, func.count(Scan.id))
         .where(Scan.dispatch_date >= df, Scan.dispatch_date <= dt, Scan.alert != "")

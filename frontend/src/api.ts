@@ -131,7 +131,8 @@ export interface QueueRow {
 export interface ScanContext {
   date: string;
   channel: Channel;
-  stats: { scanned: number; ok: number; flagged: number; flagged_manual: number; alerts: number; rejected: number; yesterday: number };
+  /** scanned = successful scans only; not_found = flagged "Not found" scans, not counted */
+  stats: { scanned: number; ok: number; flagged: number; flagged_manual: number; alerts: number; rejected: number; yesterday: number; not_found?: number };
   awb: AwbCounts;
   queue: QueueRow[];
   queue_total: number;

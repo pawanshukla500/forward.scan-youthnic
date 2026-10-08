@@ -265,8 +265,8 @@ def channel_summary_xlsx(periods: list[str], channels: list[dict], cells: dict, 
     _style_sheet(ws, [14] + [18] * len(channels) + [12], header_row)
 
     d = wb.create_sheet("Detail")
-    cols = ["Period", "Sales Channel", "Scanned", "Verified", "Need check", "Unverified", "Alerts after scan",
-            "Duplicate tries", "Wrong marketplace tries", "Blocked (cancelled / return)"]
+    cols = ["Period", "Sales Channel", "Scanned (successful)", "Verified", "Need check", "Not found (not counted)",
+            "Alerts after scan", "Duplicate tries", "Wrong marketplace tries", "Blocked (cancelled / return)"]
     d.append(cols)
     for p in periods:
         for c in channels:

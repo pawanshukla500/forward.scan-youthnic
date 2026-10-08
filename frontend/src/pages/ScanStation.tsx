@@ -554,12 +554,12 @@ export default function ScanStation() {
 
         {/* today in this marketplace: scans, then AWB progress - one slim row on wide screens */}
         <div className="scan-metrics" aria-label="Today in this marketplace">
-          <Metric label="Today's scans" value={st?.scanned} sub={st ? `${mineToday.toLocaleString("en-IN")} by you` : ""} subClass="positive" />
+          <Metric label="Successful scans" value={st?.scanned} sub={st ? `${mineToday.toLocaleString("en-IN")} by you` : ""} subClass="positive" />
           <Metric label="Successful" value={st?.ok} sub={okPct === null || okPct === undefined ? "" : `${okPct}%`} />
           <Metric
             label="Flagged"
             value={st?.flagged}
-            sub={st ? (st.flagged ? "Needs review" : "All clear") : ""}
+            sub={st ? (st.not_found ? `${st.not_found.toLocaleString("en-IN")} not found - not counted` : st.flagged ? "Needs review" : "All clear") : ""}
             subClass={st?.flagged ? "warning-text" : undefined}
           />
           <div className="metric-progress">

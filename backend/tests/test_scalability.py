@@ -166,13 +166,14 @@ def test_live_calls_leave_credits_for_sync_and_never_queue():
 def test_scan_context_is_shared_and_shows_a_new_scan(client):
     url = f"/api/scan-context?channel_id={CH}"
     first = client.get(url).json()
-    before = first["stats"]["scanned"]
+    before, before_nf = first["stats"]["scanned"], first["stats"]["not_found"]
     again = client.get(url).json()
     assert again["server_time"] == first["server_time"]  # served from the shared answer
-    saved = scan(client, "CTXCACHE00001")["scan"]
+    saved = scan(client, "CTXCACHE00001")["scan"]  # not in OMSGuru: a flagged "Not found", not a counted scan
     # (in production an answer is recomputed at most once per CACHE_MIN_INTERVAL; tests run with 0)
     after = client.get(url).json()
-    assert after["stats"]["scanned"] == before + 1 and after["server_time"] > saved["scanned_at"]
+    assert after["server_time"] > saved["scanned_at"]
+    assert after["stats"]["not_found"] == before_nf + 1 and after["stats"]["scanned"] == before
 
 
 def test_cache_computes_once_for_simultaneous_requests():
