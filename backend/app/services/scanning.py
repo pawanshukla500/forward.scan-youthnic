@@ -10,7 +10,7 @@ from sqlalchemy import String, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..models import Channel, Manifest, OmsOrder, Scan, ScanEvent, SkuPhoto, User
+from ..models import MARKED_SHIPPED_FLAG, Channel, Manifest, OmsOrder, Scan, ScanEvent, SkuPhoto, User
 from ..oms.mapping import normalize_sku_key, normalize_tracking
 from ..timeutil import dispatch_date_for, iso_utc, to_local, today_dispatch_date, utcnow
 from . import awb_shapes, cache
@@ -297,6 +297,11 @@ def _invalid(db: Session, *, user: User, station: str, channel_id: int, raw: str
     return {"severity": "error", "code": code, "message": message}
 
 
+def _is_marked(scan: Scan | None) -> bool:
+    """Recorded by the one-time "already shipped in OMSGuru" mark (services/marking.py), not by a packer."""
+    return bool(scan is not None and MARKED_SHIPPED_FLAG in (scan.flags or "").split(","))
+
+
 def _duplicate_response(db: Session, existing: Scan, user: User, station: str, channel_id: int, raw: str) -> dict:
     when = to_local(existing.scanned_at).strftime("%d-%b-%Y %H:%M")
     who = (existing.user.full_name or existing.user.username) if existing.user else "?"
@@ -344,7 +349,10 @@ def process_scan(
     key = _dedupe_key(norm, orders)
     # Duplicates are answered from the database alone - no API credit spent on them.
     existing = db.scalar(select(Scan).where(Scan.tracking_norm == key))
-    if existing:
+    # A record of the one-time "already shipped in OMSGuru" mark is not a scan: this real scan replaces it (only if
+    # it is accepted - see below), so the packer never hears "Duplicate - set aside" for it.
+    marked = existing if _is_marked(existing) else None
+    if existing and not marked:
         return _duplicate_response(db, existing, user, station, channel_id, raw)
 
     # The 2-D route code (| / \\ ...) is never an AWB, order id or invoice of an unsynced order: answered without
@@ -373,7 +381,8 @@ def process_scan(
             if new_key != key:
                 key = new_key
                 existing = db.scalar(select(Scan).where(Scan.tracking_norm == key))
-                if existing:
+                marked = existing if _is_marked(existing) else None
+                if existing and not marked:
                     linked = _linked_response(db, existing, user, station, channel_id, raw)
                     return linked or _duplicate_response(db, existing, user, station, channel_id, raw)
 
@@ -407,6 +416,14 @@ def process_scan(
         return {"severity": "error", "code": verdict.flags[0] if verdict.flags else verdict.outcome,
                 "message": verdict.message, "order": order_payload(primary), "live": live_info.get("live"), "live_ms": live_info.get("ms")}
 
+    if marked is not None:  # accepted: the real scan takes the place of the "shipped in OMSGuru" mark
+        mark = db.get(Scan, marked.id)  # re-read: another station may have replaced it meanwhile
+        if mark is not None and _is_marked(mark):
+            _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=mark.tracking_norm,
+                   outcome="MARK_REPLACED", scan_id=mark.id,
+                   message=f"Real scan replaces the 'shipped in OMSGuru' mark dated {mark.dispatch_date:%d-%b-%Y}")
+            db.delete(mark)
+            db.flush()
     now = utcnow()
     day = dispatch_date_for(now)
     manifest = _open_manifest(db, day, channel_id)

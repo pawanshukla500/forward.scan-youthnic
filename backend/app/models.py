@@ -22,6 +22,10 @@ from .timeutil import utcnow
 ROLES = ("admin", "manager", "supervisor", "scanner")
 # Reports, exports, removing scans - and scanner accounts: create, reset password, disable (admin-only otherwise).
 STAFF_ROLES = ("admin", "manager", "supervisor")
+# A scan made by the one-time "already shipped in OMSGuru" mark (services/marking.py), not by a packer. It counts as
+# scanned (the packet is gone); a real scan of the same AWB later replaces it instead of answering "Duplicate".
+MARKED_SHIPPED_FLAG = "MARKED_SHIPPED"
+SYSTEM_SHIPPED_USERNAME = "omsguru.shipped"
 
 
 class User(Base):

@@ -210,7 +210,15 @@ export default function Pending() {
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         <Stat label={`AWBs generated ${sum.is_today ? "today" : "on " + sum.date}`} value={t.generated.toLocaleString("en-IN")} />
-        <Stat label="Scanned" value={t.scanned.toLocaleString("en-IN")} tone="good" hint={t.pct !== null ? `${t.pct}% of dispatchable` : undefined} />
+        <Stat
+          label="Scanned"
+          value={t.scanned.toLocaleString("en-IN")}
+          tone="good"
+          hint={
+            (t.pct !== null ? `${t.pct}% of dispatchable` : "") +
+            (t.marked_shipped ? `${t.pct !== null ? " · " : ""}${t.marked_shipped.toLocaleString("en-IN")} marked shipped from OMSGuru (not scanned here)` : "") || undefined
+          }
+        />
         <Stat label={sum.is_today ? "Pending - due today" : "Still pending"} value={t.pending.toLocaleString("en-IN")} tone={t.pending ? "warn" : undefined} />
         <Stat label="Overdue (earlier days)" value={t.overdue.toLocaleString("en-IN")} tone={t.overdue ? "crit" : undefined} hint="AWB older, still not dispatched" />
         <Stat label="Of pending: shipped in OMS" value={t.left_unscanned.toLocaleString("en-IN")} tone={t.left_unscanned ? "warn" : undefined} hint="OMS says shipped, never scanned here" />

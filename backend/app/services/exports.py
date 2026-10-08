@@ -227,17 +227,19 @@ def reconcile_xlsx(rows: list[dict], title: str, summary: dict | None = None) ->
     _style_sheet(ws, [w for _, w in cols], header_row)
     if summary:
         s2 = wb.create_sheet("By channel")
-        head = ["Sales Channel", "AWBs generated", "Scanned", "Pending", "Overdue", "Of pending: shipped in OMS", "Cancelled", "Scanned %"]
+        head = ["Sales Channel", "AWBs generated", "Scanned", "Of scanned: marked shipped from OMSGuru", "Pending", "Overdue",
+                "Of pending: shipped in OMS", "Cancelled", "Scanned %"]
         s2.append(head)
         for ch in summary.get("channels", []):
-            s2.append([ch["name"], ch["generated"], ch["scanned"], ch["pending"], ch["overdue"], ch["left_unscanned"],
+            s2.append([ch["name"], ch["generated"], ch["scanned"], ch.get("marked_shipped", 0), ch["pending"], ch["overdue"],
+                       ch["left_unscanned"],
                        ch["cancelled"], ch["pct"] if ch["pct"] is not None else ""])
         t = summary.get("totals", {})
-        s2.append(["TOTAL", t.get("generated"), t.get("scanned"), t.get("pending"), t.get("overdue"),
+        s2.append(["TOTAL", t.get("generated"), t.get("scanned"), t.get("marked_shipped", 0), t.get("pending"), t.get("overdue"),
                    t.get("left_unscanned"), t.get("cancelled"), t.get("pct") if t.get("pct") is not None else ""])
         for c in s2[s2.max_row]:
             c.font = Font(bold=True)
-        _style_sheet(s2, [30, 14, 10, 10, 10, 20, 10, 10], 1)
+        _style_sheet(s2, [30, 14, 10, 18, 10, 10, 20, 10, 10], 1)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
