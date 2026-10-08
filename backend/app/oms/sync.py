@@ -75,6 +75,10 @@ LOOKUP_GIVE_UP = 3
 # Order-trail audit: every invoice of the last AUDIT_DAYS dispatch days, re-read every AUDIT_EVERY_SECONDS.
 AUDIT_EVERY_SECONDS = 3600
 AUDIT_DAYS = 2
+# Once a night (first round after AUDIT_DEEP_HOUR, local time) the audit covers this many days instead: late
+# cancellations / returns of older pending AWBs, and AWBs OMSGuru added to earlier days afterwards.
+AUDIT_DEEP_DAYS = 7
+AUDIT_DEEP_HOUR = 3
 AUDIT_KEEP_DAYS = 10  # results kept for Admin / Pending
 # Status groups that belong in the working set (see mapping.status_group).
 WORKING_SET = ("OPEN",)
@@ -163,6 +167,8 @@ class SyncEngine:
         # (channel id, "sub" | "order", "hit" | "miss") -> count, and the method that last found each channel's shipment
         self.lookup_stats: Counter[tuple[int | None, str, str]] = Counter()
         self._lookup_pref: dict[int | None, str] = {}
+        # monotonic time of the last scheduler loop turn (/api/health; the server watchdog restarts a stalled loop)
+        self.heartbeat = time.monotonic()
 
     # ---- lifecycle ---------------------------------------------------------------------------
 
@@ -299,6 +305,7 @@ class SyncEngine:
         except Exception:  # noqa: BLE001
             log.exception("warehouse auto-select failed")
         while not self._stop:
+            self.heartbeat = time.monotonic()
             try:
                 ran = await self._tick()
                 if not ran:
@@ -918,14 +925,20 @@ class SyncEngine:
         if not st:
             today = today_dispatch_date()
             counted_from = await asyncio.to_thread(tracking.start_date)
+            from ..timeutil import to_local
+
+            deep = (await _aget("trail_audit_deep_on") != today.isoformat()
+                    and to_local(utcnow()).hour >= AUDIT_DEEP_HOUR)
+            n_days = min(AUDIT_DEEP_DAYS, settings.retain_orders_days) if deep else AUDIT_DAYS
             wins = []
-            for d in (today - timedelta(days=i) for i in range(AUDIT_DAYS)):
+            for d in (today - timedelta(days=i) for i in range(n_days)):
                 if counted_from is not None and d < counted_from:
                     continue
                 a, b = day_bounds_utc(d)
                 wins.append([int(a.replace(tzinfo=timezone.utc).timestamp()),
                              int(b.replace(tzinfo=timezone.utc).timestamp()) - 1, d.isoformat()])
-            st = {"windows": wins, "last_id": 0, "pages": 0, "tally": {}, "started": time.time()}
+            st = {"windows": wins, "last_id": 0, "pages": 0, "tally": {}, "started": time.time(),
+                  "deep": deep, "day": today.isoformat()}
         if not st["windows"]:
             await _aset("trail_audit_progress", None)
             await _aset("trail_audit_last_done", time.time())
@@ -970,6 +983,8 @@ class SyncEngine:
         else:
             await _aset("trail_audit_progress", None)
             await _aset("trail_audit_last_done", time.time())
+            if st.get("deep"):
+                await _aset("trail_audit_deep_on", st.get("day"))
         cache.clear()
         return (f"{label}: OMSGuru {done['oms']} AWBs, {done['app']} here"
                 + (f", {done['added']} missing AWBs added" if done["added"] else "")

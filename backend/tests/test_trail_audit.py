@@ -122,3 +122,25 @@ def test_audit_runs_hourly_on_spare_credits(env):
     assert eng._next_job() == "audit"
     with session_scope() as db:
         db.execute(delete(OmsOrder).where(OmsOrder.tracking_norm.in_(["AUDMISS0001", "AUDCANC0001"])))
+
+
+def test_nightly_deep_audit_covers_seven_days_once(env, monkeypatch):
+    _, eng = env
+    from app.timeutil import today_dispatch_date
+
+    monkeypatch.setattr(sm, "AUDIT_DEEP_HOUR", 0)  # "after 03:00" - any hour in this test
+    sm._set_state("trail_audit_deep_on", None)
+    sm._set_state("trail_audit", None)
+    audit_round(eng)
+    days = sm._get_state("trail_audit")["days"]
+    assert len(days) == min(sm.AUDIT_DEEP_DAYS, sm.settings.retain_orders_days)  # the deep round
+    assert sm._get_state("trail_audit_deep_on") == today_dispatch_date().isoformat()
+    sm._set_state("trail_audit", None)
+    audit_round(eng)  # later rounds that night / day: today + yesterday again
+    assert len(sm._get_state("trail_audit")["days"]) == sm.AUDIT_DAYS
+
+
+def test_health_reports_the_sync_loop_heartbeat(env):
+    c, eng = env
+    h = c.get("/api/health").json()
+    assert "sync_loop_age_s" in h  # None when sync is off (tests); the watchdog restarts a stalled loop
