@@ -40,6 +40,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.etStationName.setText(sessionManager.stationName)
         binding.switchSound.isChecked = sessionManager.isSoundEnabled
         binding.switchVibration.isChecked = sessionManager.isVibrationEnabled
+        binding.switchFlash.isChecked = sessionManager.isFlashEnabled
         binding.etServerUrl.setText(sessionManager.serverUrl)
         if (!BuildConfig.DEBUG) {
             binding.etServerUrl.isEnabled = false
@@ -117,6 +118,7 @@ class SettingsActivity : AppCompatActivity() {
         sessionManager.stationName = binding.etStationName.text?.toString()?.trim().orEmpty()
         sessionManager.isSoundEnabled = binding.switchSound.isChecked
         sessionManager.isVibrationEnabled = binding.switchVibration.isChecked
+        sessionManager.isFlashEnabled = binding.switchFlash.isChecked
         if (BuildConfig.DEBUG) {
             val url = binding.etServerUrl.text?.toString()?.trim().orEmpty()
             if (url.startsWith("http://") || url.startsWith("https://")) {

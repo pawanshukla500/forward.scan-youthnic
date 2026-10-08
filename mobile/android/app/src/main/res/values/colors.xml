@@ -18,13 +18,15 @@
     <color name="verdict_stop_bg">#FEF2F2</color>
     <color name="verdict_stop_border">#FECACA</color>
 
-    <color name="verdict_duplicate">#C2410C</color>
-    <color name="verdict_duplicate_bg">#FFF7ED</color>
-    <color name="verdict_duplicate_border">#FED7AA</color>
+    <!-- Same as the web scan page (frontend/src/index.css): duplicate = blue, not found in OMSGuru = purple,
+         so no two results share a colour (they used to be three shades of orange). -->
+    <color name="verdict_duplicate">#1F62C4</color>
+    <color name="verdict_duplicate_bg">#E8F0FB</color>
+    <color name="verdict_duplicate_border">#BFD3F2</color>
 
-    <color name="verdict_unverified">#D97706</color>
-    <color name="verdict_unverified_bg">#FFFBEB</color>
-    <color name="verdict_unverified_border">#FDE68A</color>
+    <color name="verdict_unverified">#6F42C1</color>
+    <color name="verdict_unverified_bg">#F1ECFA</color>
+    <color name="verdict_unverified_border">#D7C8F0</color>
 
     <!-- UI neutrals -->
     <color name="background">#F8FAFC</color>

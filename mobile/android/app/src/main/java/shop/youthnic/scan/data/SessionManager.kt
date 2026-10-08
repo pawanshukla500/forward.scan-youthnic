@@ -34,6 +34,7 @@ class SessionManager(private val context: Context) {
         private const val PREF_STATION_NAME = "station_name"
         private const val PREF_SOUND_ENABLED = "sound_enabled"
         private const val PREF_VIBRATION_ENABLED = "vibration_enabled"
+        private const val PREF_FLASH_ENABLED = "flash_enabled"
         private const val PREF_LAST_CHANNEL_ID = "last_channel_id"
         private const val PREF_LAST_CHANNEL_NAME = "last_channel_name"
         private const val PREF_LAST_CHANNEL_COLOR = "last_channel_color"
@@ -192,6 +193,11 @@ class SessionManager(private val context: Context) {
     var isVibrationEnabled: Boolean
         get() = prefs.getBoolean(PREF_VIBRATION_ENABLED, true)
         set(value) = prefs.edit().putBoolean(PREF_VIBRATION_ENABLED, value).apply()
+
+    /** The scanner screen blinks in the result's colour after every scan (ScanSignals). */
+    var isFlashEnabled: Boolean
+        get() = prefs.getBoolean(PREF_FLASH_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(PREF_FLASH_ENABLED, value).apply()
 
     var lastChannelId: Int
         get() = prefs.getInt(PREF_LAST_CHANNEL_ID, -1)

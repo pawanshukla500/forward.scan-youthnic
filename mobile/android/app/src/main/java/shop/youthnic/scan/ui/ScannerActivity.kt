@@ -5,13 +5,19 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Size
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.OvershootInterpolator
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.ColorInt
+import androidx.annotation.ColorRes
+import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -52,9 +58,15 @@ import shop.youthnic.scan.databinding.ActivityScannerBinding
 import shop.youthnic.scan.databinding.DialogManualScanBinding
 import shop.youthnic.scan.databinding.DialogRecentScansBinding
 import shop.youthnic.scan.databinding.ItemPendingRowBinding
+import shop.youthnic.scan.databinding.ItemSignalRowBinding
 import shop.youthnic.scan.databinding.SheetPendingBinding
 import shop.youthnic.scan.update.AppUpdater
+import shop.youthnic.scan.util.Cue
+import shop.youthnic.scan.util.ScanSignals
 import shop.youthnic.scan.util.Ui
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -81,6 +93,33 @@ class ScannerActivity : AppCompatActivity() {
     private var refreshSoonJob: Job? = null
     private var pendingSheet: SheetPendingBinding? = null
 
+    /** Full-screen blink in the result's colour, laid over the whole screen in [initUi]. */
+    private lateinit var flashView: View
+    private var flashJob: Job? = null
+    private var stampJob: Job? = null
+
+    /** Results since the scanner was opened (by [Cue]) and the running scan number shown on the card. */
+    private val tally = IntArray(Cue.values().size)
+    private var scanSeq = 0
+    private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
+
+    /** Colour, icon and words of one result: shared by the stamp, the card banner, the legend and the tally. */
+    private class SignalStyle(
+        @ColorRes val color: Int,
+        @DrawableRes val icon: Int,
+        @StringRes val stamp: Int,
+        @StringRes val legend: Int,
+        val stampHoldMs: Long
+    )
+
+    private fun styleOf(cue: Cue): SignalStyle = when (cue) {
+        Cue.OK -> SignalStyle(R.color.verdict_ok, R.drawable.ic_signal_ok, R.string.signal_ok, R.string.legend_ok, 1100)
+        Cue.DUPLICATE -> SignalStyle(R.color.verdict_duplicate, R.drawable.ic_signal_duplicate, R.string.signal_duplicate, R.string.legend_duplicate, 1900)
+        Cue.NOT_FOUND -> SignalStyle(R.color.verdict_unverified, R.drawable.ic_signal_not_found, R.string.signal_not_found, R.string.legend_not_found, 1900)
+        Cue.CHECK -> SignalStyle(R.color.verdict_check, R.drawable.ic_signal_check, R.string.signal_check, R.string.legend_check, 1900)
+        Cue.STOP -> SignalStyle(R.color.verdict_stop, R.drawable.ic_signal_stop, R.string.signal_stop, R.string.legend_stop, 2200)
+    }
+
     companion object {
         const val EXTRA_CHANNEL_ID = "extra_channel_id"
         const val EXTRA_CHANNEL_NAME = "extra_channel_name"
@@ -89,6 +128,7 @@ class ScannerActivity : AppCompatActivity() {
         /** Header numbers and the update check refresh this often while the scanner is open. */
         private const val REFRESH_EVERY_MS = 60_000L
         private const val PENDING_ROWS = 50
+        private const val FRAME_MS = 16L
     }
 
     private val cameraPermissionLauncher = registerForActivityResult(
@@ -160,6 +200,33 @@ class ScannerActivity : AppCompatActivity() {
 
         binding.cardResult.visibility = View.GONE
         binding.cardIdleState.visibility = View.VISIBLE
+
+        // Not clickable, so touches pass through to the screen below while it blinks.
+        flashView = View(this).apply {
+            alpha = 0f
+            visibility = View.GONE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        addContentView(flashView, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        bindLegendRow(binding.legendOk, Cue.OK)
+        bindLegendRow(binding.legendDuplicate, Cue.DUPLICATE)
+        bindLegendRow(binding.legendNotFound, Cue.NOT_FOUND)
+        bindLegendRow(binding.legendCheck, Cue.CHECK)
+        bindLegendRow(binding.legendStop, Cue.STOP)
+        (application as ForwardScanApp).soundManager.prepare()
+    }
+
+    /** Idle-card legend: what each result looks, sounds and feels like; a tap plays it (not counted). */
+    private fun bindLegendRow(row: ItemSignalRowBinding, cue: Cue) {
+        val style = styleOf(cue)
+        val color = ContextCompat.getColor(this, style.color)
+        Ui.tint(row.ivSignalIcon, color)
+        row.ivSignalIcon.setImageResource(style.icon)
+        row.tvSignalName.text = getString(style.stamp)
+        row.tvSignalName.setTextColor(color)
+        row.tvSignalDesc.text = getString(style.legend)
+        row.root.setOnClickListener { signal(cue, getString(style.stamp)) }
     }
 
     // ---- server numbers: header, Pending badge, update banner -----------------------------------
@@ -353,7 +420,6 @@ class ScannerActivity : AppCompatActivity() {
 
         val app = application as ForwardScanApp
         val apiClient = app.apiClient
-        val soundManager = app.soundManager
         val station = app.sessionManager.stationName
 
         binding.progressSubmitting.visibility = View.VISIBLE
@@ -372,62 +438,170 @@ class ScannerActivity : AppCompatActivity() {
                 val scanResponse = result.getOrThrow()
                 setOnline(true)
                 displayScanResult(rawAwb, scanResponse)
-                soundManager.playFeedback(scanResponse.verdictType)
                 refreshSoon()
             } else {
                 when (val ex = result.exceptionOrNull()) {
-                    is NetworkException -> {
-                        displayNetworkError(rawAwb)
-                        soundManager.playFeedback(VerdictType.ERROR)
-                    }
+                    is NetworkException -> displayNetworkError(rawAwb)
                     is AuthExpiredException -> goToLogin()
                     else -> {
                         setOnline(true)
                         displayGeneralError(rawAwb, ex?.message ?: "Scan rejected")
-                        soundManager.playFeedback(VerdictType.ERROR)
                     }
                 }
             }
         }
     }
 
-    private fun showResultColors(color: Int) {
+    // ---- result signals: card banner, stamp over the camera, screen blink, beep, vibration ----------
+
+    /**
+     * Shows one result everywhere at once, so a packer knows it without reading: the card banner (colour, icon,
+     * title, scan number + time, what to do now) and [signal]. [counted] = a real scan answer from the server
+     * (goes into the session tally); offline / rejected requests are not counted.
+     */
+    private fun showVerdict(cue: Cue, title: String, message: String, action: String, stampText: String, counted: Boolean) {
+        val style = styleOf(cue)
+        val color = ContextCompat.getColor(this, style.color)
         binding.cardIdleState.visibility = View.GONE
         binding.cardResult.visibility = View.VISIBLE
         binding.bannerVerdict.setBackgroundColor(color)
         binding.cardResult.strokeColor = color
+        binding.ivVerdictIcon.setImageResource(style.icon)
+        binding.tvVerdictTitle.text = title
+        binding.tvVerdictMessage.text = message
+        binding.tvVerdictMessage.visibility = if (message.isBlank()) View.GONE else View.VISIBLE
+        binding.tvVerdictAction.text = action
+        binding.tvVerdictAction.visibility = if (action.isBlank()) View.GONE else View.VISIBLE
+
+        val time = clock.format(Date())
+        if (counted) {
+            scanSeq++
+            tally[cue.ordinal]++
+            renderTally()
+        }
+        binding.tvScanSeq.text = if (counted) getString(R.string.scan_seq_format, scanSeq, time) else time
         binding.scrollResultArea.scrollTo(0, 0)
+
+        // A small "pop" so a second OK in a row visibly replaces the first one.
+        val card = binding.cardResult
+        card.animate().cancel()
+        card.scaleX = 0.96f
+        card.scaleY = 0.96f
+        card.animate().scaleX(1f).scaleY(1f).setStartDelay(0).setDuration(180).start()
+
+        signal(cue, stampText)
     }
+
+    /** Beep + vibration, the big stamp over the camera and the full-screen blink for [cue]. */
+    private fun signal(cue: Cue, stampText: String) {
+        val style = styleOf(cue)
+        val color = ContextCompat.getColor(this, style.color)
+        (application as ForwardScanApp).soundManager.play(cue)
+        showStamp(style, color, stampText)
+        flash(cue, color)
+    }
+
+    private fun showStamp(style: SignalStyle, @ColorInt color: Int, text: String) {
+        val stamp = binding.layoutSignalStamp
+        stampJob?.cancel()
+        stamp.animate().cancel()
+        Ui.tint(stamp, color)
+        binding.ivSignalStamp.setImageResource(style.icon)
+        binding.tvSignalStamp.text = text
+        stamp.alpha = 0f
+        stamp.scaleX = 0.7f
+        stamp.scaleY = 0.7f
+        stamp.visibility = View.VISIBLE
+        stamp.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(0).setDuration(180)
+            .setInterpolator(OvershootInterpolator()).start()
+        // Timed with a coroutine, not an animator delay: it still hides when Android animations are switched off.
+        stampJob = lifecycleScope.launch {
+            delay(style.stampHoldMs)
+            stamp.animate().alpha(0f).setStartDelay(0).setDuration(220)
+                .withEndAction { stamp.visibility = View.GONE }.start()
+        }
+    }
+
+    /** Blinks the whole screen (ScanSignals.flashLevel); frame-timed so it works with animations switched off. */
+    private fun flash(cue: Cue, @ColorInt color: Int) {
+        flashJob?.cancel()
+        if (!(application as ForwardScanApp).sessionManager.isFlashEnabled) return
+        flashJob = lifecycleScope.launch {
+            flashView.setBackgroundColor(color)
+            flashView.alpha = 0f
+            flashView.visibility = View.VISIBLE
+            val total = ScanSignals.flashDurationMs(cue)
+            val start = SystemClock.uptimeMillis()
+            try {
+                while (true) {
+                    val t = (SystemClock.uptimeMillis() - start).toInt()
+                    if (t >= total) break
+                    flashView.alpha = ScanSignals.flashLevel(cue, t) * ScanSignals.FLASH_MAX_ALPHA
+                    delay(FRAME_MS)
+                }
+            } finally {
+                // A newer scan's blink owns the overlay now: leave it alone.
+                if (flashJob === coroutineContext[Job]) {
+                    flashView.alpha = 0f
+                    flashView.visibility = View.GONE
+                }
+            }
+        }
+    }
+
+    private fun renderTally() {
+        binding.scrollTally.visibility = View.VISIBLE
+        binding.tvTallyOk.text = getString(R.string.tally_ok, Ui.count(tally[Cue.OK.ordinal]))
+        binding.tvTallyDuplicate.text = getString(R.string.tally_duplicate, Ui.count(tally[Cue.DUPLICATE.ordinal]))
+        binding.tvTallyNotFound.text = getString(R.string.tally_not_found, Ui.count(tally[Cue.NOT_FOUND.ordinal]))
+        tallyPill(binding.tvTallyCheck, R.string.tally_check, tally[Cue.CHECK.ordinal])
+        tallyPill(binding.tvTallyStop, R.string.tally_stop, tally[Cue.STOP.ordinal])
+    }
+
+    /** Check and Stop only appear once they happen. */
+    private fun tallyPill(view: TextView, @StringRes format: Int, count: Int) {
+        view.text = getString(format, Ui.count(count))
+        view.visibility = if (count > 0) View.VISIBLE else View.GONE
+    }
+
+    private fun titleFor(verdict: VerdictType): String = getString(
+        when (verdict) {
+            VerdictType.OK -> R.string.verdict_verified
+            VerdictType.CHECK -> R.string.verdict_check
+            VerdictType.DUPLICATE -> R.string.verdict_duplicate
+            VerdictType.NOT_IN_OMS -> R.string.verdict_not_in_oms
+            VerdictType.STOP, VerdictType.ERROR -> R.string.verdict_stop
+        }
+    )
+
+    /** What to do with the packet now (the same advice as the web scan page). */
+    private fun actionFor(response: ScanResponse): String = getString(
+        when (response.verdictType) {
+            VerdictType.OK -> R.string.action_ok
+            VerdictType.DUPLICATE -> R.string.action_duplicate
+            VerdictType.NOT_IN_OMS -> R.string.action_not_found
+            VerdictType.CHECK -> when (response.code) {
+                "NOT_RTS" -> R.string.action_check_not_rts
+                "PARTIAL_CANCEL" -> R.string.action_check_partial_cancel
+                "STATUS_CHANGED" -> R.string.action_check_status_changed
+                "CHANNEL_UNMAPPED" -> R.string.action_check_channel_unmapped
+                else -> R.string.action_check
+            }
+            VerdictType.STOP, VerdictType.ERROR -> R.string.action_stop
+        }
+    )
 
     private fun displayScanResult(awb: String, response: ScanResponse) {
         val vType = response.verdictType
-        val bannerColor = ContextCompat.getColor(
-            this,
-            when (vType) {
-                VerdictType.OK -> R.color.verdict_ok
-                VerdictType.CHECK -> R.color.verdict_check
-                VerdictType.STOP -> R.color.verdict_stop
-                VerdictType.DUPLICATE -> R.color.verdict_duplicate
-                VerdictType.NOT_IN_OMS -> R.color.verdict_unverified
-                VerdictType.ERROR -> R.color.verdict_stop
-            }
-        )
-        showResultColors(bannerColor)
-
-        binding.tvVerdictTitle.text = when (vType) {
-            VerdictType.OK -> getString(R.string.verdict_verified)
-            VerdictType.CHECK -> getString(R.string.verdict_check)
-            VerdictType.STOP -> getString(R.string.verdict_stop)
-            VerdictType.DUPLICATE -> getString(R.string.verdict_duplicate)
-            VerdictType.NOT_IN_OMS -> getString(R.string.verdict_not_in_oms)
-            VerdictType.ERROR -> "SCAN ERROR"
+        val cue = ScanSignals.cueFor(vType)
+        val message = when {
+            vType == VerdictType.CHECK -> "${getString(R.string.what_to_check)} ${response.message}"
+            vType == VerdictType.OK && response.message.equals("Verified", ignoreCase = true) -> ""  // title says it
+            // "DUPLICATE - already scanned on ... by ..." -> the title already says DUPLICATE
+            vType == VerdictType.DUPLICATE -> response.message.removePrefix("DUPLICATE - ").replaceFirstChar { it.uppercase() }
+            else -> response.message
         }
-
-        binding.tvVerdictMessage.text = if (vType == VerdictType.CHECK) {
-            "${getString(R.string.what_to_check)} ${response.message}"
-        } else {
-            response.message
-        }
+        showVerdict(cue, titleFor(vType), message, actionFor(response), getString(styleOf(cue).stamp), counted = true)
         binding.tvResultAwb.text = awb
 
         val order = response.order
@@ -464,9 +638,10 @@ class ScannerActivity : AppCompatActivity() {
     }
 
     private fun displayNetworkError(awb: String) {
-        showResultColors(ContextCompat.getColor(this, R.color.verdict_stop))
-        binding.tvVerdictTitle.text = getString(R.string.verdict_offline)
-        binding.tvVerdictMessage.text = getString(R.string.connection_offline)
+        showVerdict(
+            Cue.STOP, getString(R.string.verdict_offline), getString(R.string.connection_offline),
+            getString(R.string.action_offline), getString(R.string.signal_not_sent), counted = false
+        )
         binding.tvResultAwb.text = awb
         binding.tvResultOrderId.text = getString(R.string.not_submitted)
         binding.tvResultCourier.text = "-"
@@ -476,9 +651,10 @@ class ScannerActivity : AppCompatActivity() {
     }
 
     private fun displayGeneralError(awb: String, errorMsg: String) {
-        showResultColors(ContextCompat.getColor(this, R.color.verdict_stop))
-        binding.tvVerdictTitle.text = getString(R.string.verdict_stop)
-        binding.tvVerdictMessage.text = errorMsg
+        showVerdict(
+            Cue.STOP, getString(R.string.verdict_stop), errorMsg, getString(R.string.action_stop),
+            getString(R.string.signal_stop), counted = false
+        )
         binding.tvResultAwb.text = awb
         binding.tvResultOrderId.text = "-"
         binding.tvResultCourier.text = "-"
