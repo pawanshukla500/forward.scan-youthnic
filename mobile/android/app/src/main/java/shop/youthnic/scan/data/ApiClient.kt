@@ -7,6 +7,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.util.concurrent.TimeUnit
 
 class NetworkException(message: String, val isOffline: Boolean = true) : IOException(message)
@@ -23,6 +24,9 @@ class ApiClient(private val sessionManager: SessionManager) {
         .writeTimeout(15, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
+
+    /** Scans are never re-sent by OkHttp on a reset connection: the first attempt may already be saved. */
+    private val scanClient: OkHttpClient = client.newBuilder().retryOnConnectionFailure(false).build()
 
     private fun baseUrl(): String {
         return sessionManager.serverUrl.removeSuffix("/")
@@ -43,12 +47,13 @@ class ApiClient(private val sessionManager: SessionManager) {
 
     private fun <T> executeWithAutoRefresh(
         authenticated: Boolean = true,
+        http: OkHttpClient = client,
         requestFactory: () -> Request,
         parser: (String) -> T
     ): Result<T> {
         return try {
             val request = requestFactory()
-            val response = client.newCall(request).execute()
+            val response = http.newCall(request).execute()
 
             if (response.code == 401 && authenticated) {
                 response.close()
@@ -57,7 +62,7 @@ class ApiClient(private val sessionManager: SessionManager) {
                 if (refreshResult.isSuccess) {
                     // Retry original call once
                     val retryRequest = requestFactory()
-                    val retryResponse = client.newCall(retryRequest).execute()
+                    val retryResponse = http.newCall(retryRequest).execute()
                     val body = retryResponse.body?.string().orEmpty()
                     if (!retryResponse.isSuccessful) {
                         retryResponse.close()
@@ -66,8 +71,16 @@ class ApiClient(private val sessionManager: SessionManager) {
                     retryResponse.close()
                     return Result.success(parser(body))
                 } else {
-                    sessionManager.clearSession()
-                    return Result.failure(AuthExpiredException())
+                    // Only a refresh the server REJECTED ends the session. A timeout / 5xx / 429 while renewing
+                    // (deploy, weak Wi-Fi) is a network problem: stay signed in and let the next call try again.
+                    val err = refreshResult.exceptionOrNull()
+                    val rejected = err is AuthExpiredException ||
+                        (err is ApiException && (err.code == 401 || err.code == 403))
+                    if (rejected) {
+                        sessionManager.clearSession()
+                        return Result.failure(AuthExpiredException())
+                    }
+                    return Result.failure(NetworkException("Could not renew the sign-in - check the connection and try again"))
                 }
             }
 
@@ -78,6 +91,9 @@ class ApiClient(private val sessionManager: SessionManager) {
             }
             response.close()
             Result.success(parser(body))
+        } catch (e: InterruptedIOException) {
+            // Sent, but no answer in time: the server may have saved it. Not "offline" - rescanning shows the result.
+            Result.failure(NetworkException("No answer from the server in time: ${e.message.orEmpty()}", isOffline = false))
         } catch (e: IOException) {
             Result.failure(NetworkException("No connection — scan not submitted: ${e.message.orEmpty()}"))
         } catch (e: Exception) {
@@ -231,6 +247,7 @@ class ApiClient(private val sessionManager: SessionManager) {
             put("station", station.trim())
         }
         return executeWithAutoRefresh(
+            http = scanClient,
             requestFactory = {
                 newRequestBuilder("/api/scan")
                     .post(json.toString().toRequestBody(jsonMediaType))

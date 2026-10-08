@@ -39,7 +39,7 @@ object ScanSignals {
         VerdictType.DUPLICATE -> Cue.DUPLICATE
         VerdictType.NOT_IN_OMS -> Cue.NOT_FOUND
         VerdictType.CHECK -> Cue.CHECK
-        VerdictType.STOP, VerdictType.ERROR -> Cue.STOP
+        VerdictType.STOP, VerdictType.ERROR, VerdictType.WRONG_BARCODE -> Cue.STOP
     }
 
     // Every blink cycle is >= 340 ms, so never more than three flashes in one second (photosensitivity limit).

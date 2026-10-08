@@ -115,7 +115,9 @@ data class PendingAwb(
     val slaDate: String,
     val awbGeneratedAt: String,
     val ageDays: Int,
-    val priority: String
+    val priority: String,
+    /** pending here although OMSGuru already shows it shipped / in transit */
+    val shippedInOms: Boolean = false
 ) {
     companion object {
         fun fromJson(json: JSONObject): PendingAwb {
@@ -128,7 +130,8 @@ data class PendingAwb(
                 slaDate = if (json.isNull("sla_date")) "" else json.optString("sla_date", ""),
                 awbGeneratedAt = if (json.isNull("awb_generated_at")) "" else json.optString("awb_generated_at", ""),
                 ageDays = json.optInt("age_days", 0),
-                priority = json.optString("priority", "Normal")
+                priority = json.optString("priority", "Normal"),
+                shippedInOms = json.optBoolean("shipped_in_oms", false)
             )
         }
     }
@@ -304,6 +307,8 @@ enum class VerdictType {
     STOP,
     DUPLICATE,
     NOT_IN_OMS,
+    /** Not an AWB (route / 2-D code, packet id, product barcode...) - nothing saved, scan the AWB of the same packet */
+    WRONG_BARCODE,
     ERROR
 }
 
@@ -330,7 +335,8 @@ data class ScanResponse(
             val verdictType = when {
                 code == "DUPLICATE" -> VerdictType.DUPLICATE
                 code == "NOT_IN_OMS" -> VerdictType.NOT_IN_OMS
-                code in listOf("WRONG_CHANNEL", "CANCELLED", "RETURN", "BLOCKED", "INVALID") -> VerdictType.STOP
+                code in listOf("WRONG_BARCODE", "INVALID", "AMBIGUOUS") -> VerdictType.WRONG_BARCODE
+                code in listOf("WRONG_CHANNEL", "CANCELLED", "RETURN", "BLOCKED") -> VerdictType.STOP
                 severity == "error" -> VerdictType.STOP
                 severity == "warning" || code == "WARN" -> VerdictType.CHECK
                 severity == "success" || code == "OK" -> VerdictType.OK

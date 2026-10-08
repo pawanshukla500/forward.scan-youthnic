@@ -200,4 +200,15 @@
     <string name="camera_auto_pause">Pause camera after %1$d min without a scan</string>
     <string name="camera_info_format">Camera in use: %1$s</string>
     <string name="camera_info_unknown">Camera in use: shown after the scanner has been opened once</string>
+
+    <!-- Review fixes, 8 Oct 2026 -->
+    <string name="verdict_wrong_barcode">WRONG BARCODE - NOT SAVED</string>
+    <string name="signal_wrong_barcode">WRONG BARCODE</string>
+    <string name="action_wrong_barcode">Nothing saved - scan the AWB barcode on this same label (the long one with the tracking number)</string>
+    <string name="action_alert">Do not ship this packet - see the message above</string>
+    <string name="verdict_not_confirmed">NOT CONFIRMED</string>
+    <string name="signal_not_confirmed">SCAN AGAIN</string>
+    <string name="not_confirmed_message">The server did not answer in time - the scan may be saved</string>
+    <string name="action_not_confirmed">Scan the same packet again to see the result</string>
+    <string name="pending_shipped_in_oms">Shipped in OMSGuru, not scanned</string>
 </resources>
