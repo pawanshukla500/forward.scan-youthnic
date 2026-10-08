@@ -137,8 +137,10 @@ def test_exit_check_finds_out_what_unscanned_orders_became(env):
     assert c.get("/api/admin/sync").json()["exit_check_pending"] == 0
 
     with session_scope() as db:
-        buckets = {r.awb: r.bucket() for r in reconcile.collect(db)}
-    assert buckets[mock_awb(shipped)] == "left_unscanned"     # a real "dispatched without a scan?"
+        recs = {r.awb: r for r in reconcile.collect(db)}
+        buckets = {awb: r.bucket() for awb, r in recs.items()}
+    # shipped in OMS but never scanned here: stays pending until a scan (shown as "shipped in OMS")
+    assert buckets[mock_awb(shipped)] == "pending" and recs[mock_awb(shipped)].shipped_in_oms
     assert buckets[mock_awb(cancelled)] == "cancelled"        # not a miss: cancelled after the AWB
     assert buckets[mock_awb(scanned)] == "scanned"
     # nothing left to check: the job idles instead of polling

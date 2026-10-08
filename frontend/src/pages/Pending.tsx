@@ -34,14 +34,16 @@ interface Row {
   awb_generated_local: string;
   age_days: number | null;
   sla_breached: boolean;
+  /** pending here, although OMS already shows it shipped / in transit */
+  shipped_in_oms?: boolean;
   order: Order | null;
   scan: Scan | null;
 }
 
 const BUCKETS = [
-  { key: "pending", label: "Pending", hint: "AWB generated on this day, not scanned, still Ready-to-ship in OMS" },
+  { key: "pending", label: "Pending", hint: "AWB generated on this day and not scanned here yet - also when OMS already shows it shipped" },
   { key: "overdue", label: "Overdue", hint: "AWB generated on an EARLIER day and still not dispatched" },
-  { key: "left_unscanned", label: "Left RTS, not scanned", hint: "OMS no longer shows it Ready-to-ship (shipped / in transit), but it was never forward-scanned" },
+  { key: "left_unscanned", label: "Shipped in OMS, not scanned", hint: "Part of Pending: OMS already shows it shipped / in transit, but it was never scanned here - stays pending until it is" },
   { key: "cancelled", label: "Cancelled after AWB", hint: "Cancelled or returned after the label was made - do not ship" },
   { key: "scanned", label: "Scanned", hint: "Forward-scanned" },
   { key: "generated", label: "All AWBs", hint: "Every AWB generated on this day" },
@@ -182,7 +184,7 @@ export default function Pending() {
         <Stat label="Scanned" value={t.scanned.toLocaleString("en-IN")} tone="good" hint={t.pct !== null ? `${t.pct}% of dispatchable` : undefined} />
         <Stat label={sum.is_today ? "Pending - due today" : "Still pending"} value={t.pending.toLocaleString("en-IN")} tone={t.pending ? "warn" : undefined} />
         <Stat label="Overdue (earlier days)" value={t.overdue.toLocaleString("en-IN")} tone={t.overdue ? "crit" : undefined} hint="AWB older, still not dispatched" />
-        <Stat label="Left RTS, not scanned" value={t.left_unscanned.toLocaleString("en-IN")} hint="OMS shows shipped, no forward scan" />
+        <Stat label="Of pending: shipped in OMS" value={t.left_unscanned.toLocaleString("en-IN")} tone={t.left_unscanned ? "warn" : undefined} hint="OMS says shipped, never scanned here" />
         <Stat label="Cancelled after AWB" value={t.cancelled.toLocaleString("en-IN")} hint="excluded from pending" />
       </div>
 
@@ -203,7 +205,7 @@ export default function Pending() {
                   <th className="px-3 py-2 text-right font-medium">Scanned</th>
                   <th className="px-3 py-2 text-right font-medium">Pending</th>
                   <th className="px-3 py-2 text-right font-medium">Overdue</th>
-                  <th className="px-3 py-2 text-right font-medium">Left RTS, not scanned</th>
+                  <th className="px-3 py-2 text-right font-medium">Of pending: shipped in OMS</th>
                   <th className="px-3 py-2 text-right font-medium">Cancelled</th>
                   <th className="w-56 px-4 py-2 font-medium">Progress</th>
                 </tr>
@@ -315,7 +317,14 @@ export default function Pending() {
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-2.5 text-ink-2">{OMS_STATUS[r.status] ?? r.status}</td>
+                      <td className="px-3 py-2.5 text-ink-2">
+                        {OMS_STATUS[r.status] ?? r.status}
+                        {r.shipped_in_oms && (
+                          <span className="ml-1.5 inline-block rounded-full bg-warn-wash px-2 py-0.5 text-xs font-bold text-warn-ink" title="OMS already shows it shipped, but it was never scanned here">
+                            not scanned
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3 py-2.5 text-xs text-ink-2">{r.scan ? `${r.scan.scanned_at_local} · ${r.scan.user}` : "-"}</td>
                     </tr>
                   ))}

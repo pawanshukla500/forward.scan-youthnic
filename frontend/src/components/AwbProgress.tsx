@@ -5,11 +5,11 @@ import { cx } from "./ui";
 const SEGMENTS: { key: keyof AwbCounts; label: string; color: string }[] = [
   { key: "scanned", label: "Scanned", color: "var(--good)" },
   { key: "pending", label: "Pending", color: "var(--warn)" },
-  { key: "left_unscanned", label: "Left RTS, not scanned", color: "#ec835a" },
   { key: "cancelled", label: "Cancelled after AWB", color: "var(--line-strong)" },
 ];
 
-/** Stacked bar of one day's AWBs (scanned / pending / left without scan / cancelled) + overdue from earlier days. */
+/** Stacked bar of one day's AWBs (scanned / pending / cancelled) + overdue from earlier days. Pending includes AWBs OMS
+    already shows shipped but nobody scanned here (left_unscanned, named next to the legend). */
 export function AwbProgress({ c, compact, title = "AWBs generated today", bare }: { c: AwbCounts; compact?: boolean; title?: string; bare?: boolean }) {
   const total = Math.max(0, c.generated);
   if (bare) {
@@ -57,6 +57,9 @@ export function AwbProgress({ c, compact, title = "AWBs generated today", bare }
             <span key={s.key} className="inline-flex items-center gap-1.5">
               <span className="inline-block size-2 rounded-full" style={{ background: s.color }} aria-hidden />
               {s.label} <b className="tnum text-ink">{Number(c[s.key] ?? 0).toLocaleString("en-IN")}</b>
+              {s.key === "pending" && c.left_unscanned > 0 && (
+                <span className="text-muted">({c.left_unscanned.toLocaleString("en-IN")} already shipped in OMS)</span>
+              )}
             </span>
           ))}
         </div>

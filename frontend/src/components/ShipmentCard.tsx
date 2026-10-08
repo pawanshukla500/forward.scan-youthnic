@@ -22,6 +22,7 @@ export const CODE_TITLE: Record<string, string> = {
   CANCELLED: "Cancelled - do not ship",
   RETURN: "Return - do not ship",
   INVALID: "Invalid barcode",
+  WRONG_BARCODE: "Wrong barcode - scan the AWB",
   NOT_IN_OMS: "Pending verification",
   NOT_RTS: "Accepted - not packed in OMS",
   PARTIAL_CANCEL: "Accepted - partly cancelled",

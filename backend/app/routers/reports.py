@@ -15,7 +15,7 @@ from ..models import Channel, OmsOrder, Scan, ScanEvent, User
 from ..oms.mapping import normalize_tracking
 from ..oms.sync import get_engine
 from ..security import current_user, require_supervisor
-from ..services import cache, tracking
+from ..services import cache, reconcile, tracking
 from ..services.exports import pending_xlsx, scans_xlsx
 from ..services.scanning import order_payload, scan_payload
 from ..timeutil import iso_utc, to_local, today_dispatch_date, utcnow
@@ -383,7 +383,7 @@ def _pending_query(channel_id: int | None):
     stmt = (
         select(OmsOrder)
         .outerjoin(Scan, Scan.tracking_norm == OmsOrder.tracking_norm)
-        .where(OmsOrder.status_group == "OPEN", OmsOrder.tracking_norm != "", Scan.id.is_(None))
+        .where(OmsOrder.status_group.notin_(reconcile.NOT_PENDING), OmsOrder.tracking_norm != "", Scan.id.is_(None))
     )
     if channel_id:
         stmt = stmt.where(OmsOrder.channel_id == channel_id)

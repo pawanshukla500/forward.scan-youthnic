@@ -3,11 +3,14 @@
 An AWB generated today must be dispatched (scanned) today. For each AWB we know (last RETAIN_ORDERS_DAYS):
 
   scanned         - forward-scanned by the team (any day)
-  pending         - not scanned, still Packed / Ready-to-ship in OMS          -> must go out
+  pending         - not scanned (whatever OMS shows now, unless cancelled)    -> must go out
   overdue         - pending, and the AWB was generated before today           -> late
-  left_unscanned  - not scanned, but OMS no longer shows it Ready-to-ship
-                    (shipped / in transit / moved) - dispatched without a scan?
+  left_unscanned  - INFO ONLY, part of pending: OMS already shows it shipped / in transit / no longer
+                    Ready-to-ship, but nobody scanned it here
   cancelled       - not scanned, cancelled or returned after the AWB was made -> do not ship
+
+Only a forward scan in this app takes an AWB out of pending (user, 8 Oct 2026): OMS moving an order to Shipped /
+In Transit - Meesho does it as soon as the label is printed, Flipkart at manifest - must not make it disappear.
 """
 from __future__ import annotations
 
@@ -28,7 +31,9 @@ _RANK = {"OPEN": 0, "NOT_PACKED": 1, "PARTIAL_CANCEL": 2, "UNKNOWN": 3, "MOVED":
 
 
 # Statuses that are NOT pending (see AwbRec.bucket); used to push the "pending" filter into SQL.
-_NOT_PENDING = ("CANCELLED", "RETURN", "SHIPPED", "MOVED")
+_NOT_PENDING = NOT_PENDING = ("CANCELLED", "RETURN")
+# Pending AWBs that OMS already shows as gone (counted as "left_unscanned" for information, still pending).
+SHIPPED_IN_OMS = ("SHIPPED", "MOVED")
 
 
 @dataclass
@@ -44,11 +49,13 @@ class AwbRec:
     def bucket(self) -> str:
         if self.scan_id:
             return "scanned"
-        if self.status in ("CANCELLED", "RETURN"):
+        if self.status in _NOT_PENDING:
             return "cancelled"
-        if self.status in ("SHIPPED", "MOVED"):
-            return "left_unscanned"
-        return "pending"
+        return "pending"  # also when OMS already says Shipped / In Transit: only a scan takes it out
+
+    @property
+    def shipped_in_oms(self) -> bool:
+        return self.bucket() == "pending" and self.status in SHIPPED_IN_OMS
 
     def awb_day(self) -> date | None:
         return dispatch_date_for(self.awb_at) if self.awb_at else None
@@ -119,10 +126,12 @@ def summary(db: Session, day: date) -> dict[str, Any]:
             row = by_day.setdefault(d, _empty())
             row["generated"] += 1
             row[b] += 1
+            row["left_unscanned"] += r.shipped_in_oms
         if r.awb_at is not None and start <= r.awb_at < end:
             row = per.setdefault(r.channel_id, _empty())
             row["generated"] += 1
             row[b] += 1
+            row["left_unscanned"] += r.shipped_in_oms
             if b == "pending" and day < today:
                 row["overdue"] += 1
         elif day == today and b == "pending" and r.awb_at is not None and r.awb_at < today_start:
@@ -169,7 +178,9 @@ def records_for(db: Session, day: date, bucket: str, channel_id: int | None) -> 
     else:
         start, end = day_bounds_utc(day)
         recs = collect(db, start=start, end=end, channel_id=channel_id)
-        if bucket != "generated":
+        if bucket == "left_unscanned":  # the pending ones OMS already shows as shipped
+            recs = [r for r in recs if r.shipped_in_oms]
+        elif bucket != "generated":
             recs = [r for r in recs if r.bucket() == bucket]
     far = datetime.max
     recs.sort(key=lambda r: (r.sla or far, r.awb_at or far, r.awb))
@@ -194,6 +205,7 @@ def rows_payload(db: Session, recs: Iterable[AwbRec]) -> list[dict[str, Any]]:
             "awb": o.tracking_raw if o else r.awb,
             "bucket": r.bucket() if not (r.bucket() == "pending" and awb_day and awb_day < today) else "overdue",
             "status": r.status,
+            "shipped_in_oms": r.shipped_in_oms,
             "awb_generated_at": iso_utc(r.awb_at),
             "awb_generated_local": to_local(r.awb_at).strftime("%d-%b %H:%M") if r.awb_at else "",
             "age_days": (today - awb_day).days if awb_day else None,

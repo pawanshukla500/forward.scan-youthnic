@@ -13,7 +13,7 @@ from ..models import STAFF_ROLES, Channel, Manifest, OmsOrder, Scan, User
 from ..oms.mapping import normalize_tracking
 from ..oms.sync import get_engine
 from ..security import current_user
-from ..services import cache, tracking
+from ..services import cache, reconcile, tracking
 from ..services.realtime import hub
 from ..services.scanning import _event, find_orders, order_payload, process_scan, scan_payload
 from ..timeutil import today_dispatch_date, utcnow
@@ -22,12 +22,12 @@ router = APIRouter(prefix="/api", tags=["scan"])
 
 
 def pending_counts(db: Session) -> dict[int, int]:
-    """Open (Packed / Ready-to-ship) shipments in OMS that nobody has scanned yet, per channel - counted from the
-    admin-set start date."""
+    """AWBs nobody has scanned here yet, per channel - whatever OMS shows now, unless cancelled / returned
+    (reconcile: only a scan takes an AWB out of pending) - counted from the admin-set start date."""
     q = (
         select(OmsOrder.channel_id, func.count(func.distinct(OmsOrder.tracking_norm)))
         .outerjoin(Scan, Scan.tracking_norm == OmsOrder.tracking_norm)
-        .where(OmsOrder.status_group == "OPEN", OmsOrder.tracking_norm != "", Scan.id.is_(None))
+        .where(OmsOrder.status_group.notin_(reconcile.NOT_PENDING), OmsOrder.tracking_norm != "", Scan.id.is_(None))
         .group_by(OmsOrder.channel_id)
     )
     if (counted_from := tracking.start_utc()) is not None:
@@ -199,6 +199,7 @@ def _scan_context(db: Session, channel: Channel, limit: int) -> dict:
     counts = {"generated": len(today_recs), "scanned": 0, "pending": 0, "left_unscanned": 0, "cancelled": 0}
     for r in today_recs:
         counts[r.bucket()] += 1
+        counts["left_unscanned"] += r.shipped_in_oms  # info: part of pending
     earlier = reconcile.collect(db, end=start, channel_id=channel_id, pending_only=True)
     counts["overdue"] = len(earlier)
     base = counts["generated"] - counts["cancelled"]
