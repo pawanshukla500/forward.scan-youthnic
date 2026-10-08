@@ -85,7 +85,8 @@ A device refresh session becomes immediately invalid if:
 
 ## 4. Camera & Scanner Performance
 
-- **CameraX ImageAnalysis:** Configured with `STRATEGY_KEEP_ONLY_LATEST` and a balanced resolution target of `1280x720`.
+- **CameraX ImageAnalysis:** Configured with `STRATEGY_KEEP_ONLY_LATEST`; preview and analysis capped at `1280x720` with a `ResolutionSelector` (closest size at or below; `1920x1080` only with Settings -> *Sharper camera*). Limits live in `util/CameraTuning.kt`.
+- **Battery:** ML Kit reads at most one frame every 100 ms (not during a scan request, the 2.2 s cooldown or while a dialog/sheet covers the camera); the sensor runs at most ~24 fps (picked from the phone's own AE frame-rate ranges, dropped automatically if the phone reports a camera error); SurfaceView (`PERFORMANCE`) preview; the camera closes after 2 minutes without a scan or touch (*Tap to scan* reopens it, and it reopens when the phone wakes); the screen is kept on only while the camera is open. Settings shows the size and fps the camera actually runs at.
 - **Memory Safety:** Every `ImageProxy` instance is guaranteed closed in a `try/finally` or `addOnCompleteListener` block.
 - **Format Filtering:** Restricts ML Kit recognition to 1-D barcode formats (`Code128`, `Code39`, `Code93`, `Codabar`, `ITF`, `EAN13`, `EAN8`, `UPC-A`, `UPC-E`).
 - **2-D Rejection:** Explicitly rejects QR, DataMatrix, PDF417, Aztec and URLs via `BarcodeRules.looksLikeQr`.

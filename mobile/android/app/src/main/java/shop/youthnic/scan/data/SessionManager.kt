@@ -35,6 +35,9 @@ class SessionManager(private val context: Context) {
         private const val PREF_SOUND_ENABLED = "sound_enabled"
         private const val PREF_VIBRATION_ENABLED = "vibration_enabled"
         private const val PREF_FLASH_ENABLED = "flash_enabled"
+        private const val PREF_SHARP_CAMERA = "camera_1080p"
+        private const val PREF_AUTO_PAUSE_CAMERA = "camera_auto_pause"
+        private const val PREF_CAMERA_INFO = "camera_info"
         private const val PREF_LAST_CHANNEL_ID = "last_channel_id"
         private const val PREF_LAST_CHANNEL_NAME = "last_channel_name"
         private const val PREF_LAST_CHANNEL_COLOR = "last_channel_color"
@@ -198,6 +201,21 @@ class SessionManager(private val context: Context) {
     var isFlashEnabled: Boolean
         get() = prefs.getBoolean(PREF_FLASH_ENABLED, true)
         set(value) = prefs.edit().putBoolean(PREF_FLASH_ENABLED, value).apply()
+
+    /** Camera reads barcodes at 1080p instead of 720p (small / far barcodes; uses more battery). Off by default. */
+    var isSharpCamera: Boolean
+        get() = prefs.getBoolean(PREF_SHARP_CAMERA, false)
+        set(value) = prefs.edit().putBoolean(PREF_SHARP_CAMERA, value).apply()
+
+    /** The scanner closes the camera after CameraTuning.IDLE_PAUSE_MS without a scan or a touch. On by default. */
+    var isAutoPauseCamera: Boolean
+        get() = prefs.getBoolean(PREF_AUTO_PAUSE_CAMERA, true)
+        set(value) = prefs.edit().putBoolean(PREF_AUTO_PAUSE_CAMERA, value).apply()
+
+    /** What the camera last ran at on this phone, e.g. "1280×720 · up to 24 fps" (shown in Settings). */
+    var lastCameraInfo: String
+        get() = prefs.getString(PREF_CAMERA_INFO, "") ?: ""
+        set(value) = prefs.edit().putString(PREF_CAMERA_INFO, value).apply()
 
     var lastChannelId: Int
         get() = prefs.getInt(PREF_LAST_CHANNEL_ID, -1)
