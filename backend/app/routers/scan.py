@@ -82,20 +82,21 @@ def scan(body: ScanIn, db: Session = Depends(get_db), user: User = Depends(curre
         live=engine.live_lookup if engine else None,
     )
     cache.invalidate(body.channel_id)  # this channel's counts and queue changed (or its rejected count did)
+    db.commit()  # hand the connection back: brief() below uses its own sessions
     if res.get("code") == "NOT_IN_OMS" and engine:
         b = engine.brief()
         if res.get("live") in ("busy", "timeout", "error"):
-            res["message"] = ("OMSGuru did not answer in time - saved as UNVERIFIED, it verifies automatically "
-                              "when the order syncs")
+            res["message"] = ("OMSGuru did not answer in time - saved as NOT FOUND (flagged, not counted as "
+                              "scanned); it counts by itself when the order syncs")
         elif b["invoices_failing"]:
-            res["message"] = ("OMSGuru sync is failing right now, so new AWBs are not coming in - saved as UNVERIFIED, "
-                              "it verifies automatically once the sync recovers")
+            res["message"] = ("OMSGuru sync is failing right now, so new AWBs are not coming in - saved as NOT FOUND "
+                              "(flagged, not counted); it counts by itself once the sync recovers")
         elif b["initial_load"]:
             res["message"] = (f"OMS order list is still loading ({b['cached_orders']:,} orders so far) - "
-                              "saved as UNVERIFIED, it verifies automatically when the order arrives")
+                              "saved as NOT FOUND (flagged, not counted); it counts by itself when the order arrives")
         else:
-            res["message"] = ("Checked OMSGuru live: no order with this AWB yet - saved as UNVERIFIED. "
-                              "Scan the ORDER ID barcode on the same label to fetch it now.")
+            res["message"] = ("Checked OMSGuru live: no order with this AWB yet - saved as NOT FOUND (flagged, not "
+                              "counted as scanned). Scan the ORDER ID barcode on the same label to fetch it now.")
     return res
 
 
@@ -170,10 +171,16 @@ def scan_context(channel_id: int, limit: int = Query(12, ge=1, le=50), db: Sessi
     channel = db.get(Channel, channel_id)
     if not channel:
         raise HTTPException(404, "Sales channel not found")
+    db.commit()  # don't hold a connection while waiting for another station's computation of the shared answer
     # Every station of the channel refetches this after each scan: compute it once and share it (at most once a
     # second per channel; "server_time" says how old it is, so a station can ask again for its own latest scan).
-    return cache.cached(("scan-context", channel_id, limit), channel_id, 2.0, lambda: _scan_context(db, channel, limit),
+    # Computed once with the longest list and cut per caller: phones ask for 12 rows, the Pending sheet for 50.
+    full = cache.cached(("scan-context", channel_id), channel_id, 2.0, lambda: _scan_context(db, channel, CONTEXT_ROWS),
                         min_interval=settings.cache_min_interval)
+    return full if limit >= len(full["queue"]) else {**full, "queue": full["queue"][:limit]}
+
+
+CONTEXT_ROWS = 50
 
 
 def _scan_context(db: Session, channel: Channel, limit: int) -> dict:
@@ -288,7 +295,8 @@ def lookup(q: str, db: Session = Depends(get_db), user: User = Depends(current_u
         raise HTTPException(400, "Enter at least 3 characters")
     scans = list(
         db.scalars(
-            select(Scan).where(or_(Scan.tracking_norm == norm, Scan.tracking_norm.like(f"%{norm}%"))).order_by(Scan.id.desc()).limit(20)
+            select(Scan).where(or_(Scan.tracking_norm == norm, Scan.tracking_norm.contains(norm, autoescape=True)))
+            .order_by(Scan.id.desc()).limit(20)
         ).unique()
     )
     orders = find_orders(db, norm)
@@ -296,7 +304,8 @@ def lookup(q: str, db: Session = Depends(get_db), user: User = Depends(current_u
         orders = list(
             db.scalars(
                 select(OmsOrder).where(
-                    or_(OmsOrder.tracking_norm.like(f"%{norm}%"), func.upper(OmsOrder.channel_order_id).like(f"%{norm}%"))
+                    or_(OmsOrder.tracking_norm.contains(norm, autoescape=True),
+                        func.upper(OmsOrder.channel_order_id).contains(norm, autoescape=True))
                 ).limit(20)
             ).unique()
         )

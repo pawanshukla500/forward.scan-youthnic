@@ -219,6 +219,8 @@ export default function ScanStation() {
     if (event === "scan_rejected" && data.channel_id === cid) ctxSoon();
     if (event === "scan" && data.channel_id === cid) {
       setRecent((r) => (r.some((s) => s.id === data.id) ? r : [data as Scan, ...r].slice(0, 40)));
+      // another station's scan: a shared answer older than it is stale here too (asked again until it includes it)
+      if (data.scanned_at) lastScanAt.current = Math.max(lastScanAt.current, Date.parse(data.scanned_at));
       ctxSoon();
     } else if (event === "scan_updated" && data.channel_id === cid) {
       setRecent((r) => r.map((s) => (s.id === data.id ? (data as Scan) : s)));

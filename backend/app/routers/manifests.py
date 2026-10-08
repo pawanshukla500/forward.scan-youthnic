@@ -46,7 +46,7 @@ def list_manifests(day: str | None = Query(None, alias="date"), db: Session = De
 
 @router.post("/manifests/{manifest_id}/close")
 def close_manifest(manifest_id: int, db: Session = Depends(get_db), user: User = Depends(require_supervisor)):
-    m = db.get(Manifest, manifest_id)
+    m = db.get(Manifest, manifest_id, with_for_update=True)  # waits for scans being saved into it
     if not m:
         raise HTTPException(404, "Manifest not found")
     if m.status == "CLOSED":
@@ -111,7 +111,7 @@ def oms_dispatch_summary(db: Session = Depends(get_db), user: User = Depends(cur
 @router.get("/oms-dispatch/export.csv")
 def oms_dispatch_export(
     day: str | None = Query(None, alias="date"), channel_id: int | None = None, include_exported: bool = False,
-    mark: bool = True, db: Session = Depends(get_db), user: User = Depends(require_supervisor),
+    mark: bool = False, db: Session = Depends(get_db), user: User = Depends(require_supervisor),
 ):
     d = _parse_day(day)
     statuses = ["PENDING", "FAILED"] + (["EXPORTED"] if include_exported else [])

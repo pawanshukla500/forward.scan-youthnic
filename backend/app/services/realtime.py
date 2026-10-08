@@ -47,7 +47,10 @@ class Hub:
 
         for ws in await asyncio.gather(*(send(ws) for ws in list(self._clients))):
             if ws is not None:
-                self._clients.discard(ws)  # the page reconnects by itself
+                self._clients.discard(ws)
+                # close it too: its pings still got pongs, so the page never noticed it was dropped and missed
+                # every scan and AFTER-SCAN alert until reloaded. Closed, it reconnects by itself.
+                asyncio.get_running_loop().create_task(_close_quietly(ws))
 
     def publish(self, event: str, data: dict[str, Any]) -> None:
         """Safe to call from sync request handlers (threadpool) and from the event loop."""
@@ -62,6 +65,13 @@ class Hub:
             self._loop.create_task(self._send_all(text))
         else:
             asyncio.run_coroutine_threadsafe(self._send_all(text), self._loop)
+
+
+async def _close_quietly(ws: WebSocket) -> None:
+    try:
+        await asyncio.wait_for(ws.close(code=1011), SEND_TIMEOUT)
+    except Exception:  # noqa: BLE001 - already gone
+        pass
 
 
 hub = Hub()
