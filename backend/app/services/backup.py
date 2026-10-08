@@ -169,7 +169,7 @@ def _offsite(files: list[Path], sub: str, keep_days: int) -> dict[str, Any] | No
     try:
         for f in files:
             _rclone(["copyto", "--retries", "3", str(f), f"{target}/{f.name}"])
-        listing = json.loads(_rclone(["lsjson", "--hash", "--files-only", f"{target}/{files[0].name}"], timeout=120) or "[]")
+        listing = json.loads(_rclone(["lsjson", "--hash", "--files-only", f"{target}/{files[0].name}"], timeout=300) or "[]")
         entry = listing[0] if listing else {}
         remote_md5 = (entry.get("Hashes") or {}).get("md5")
         ok = bool(entry) and entry.get("Size") == files[0].stat().st_size and remote_md5 in (None, _md5(files[0]))
