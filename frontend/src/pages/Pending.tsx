@@ -24,6 +24,15 @@ interface Summary {
   days: (Omit<AwbCounts, "pct"> & { date: string })[];
   oms_check: { ok: boolean; retry: boolean; checked_at: number; oms: number; local: number } | null;
   counted_from: string | null;
+  /** hourly order-trail audit: every AWB OMSGuru invoiced on this day vs the AWBs here */
+  trail: {
+    checked_at: number;
+    complete: boolean;
+    oms: number;
+    app: number;
+    added: number;
+    channels: { id: number | null; name: string; oms: number; app: number; added: number }[];
+  } | null;
 }
 
 interface Row {
@@ -71,6 +80,25 @@ function OmsCheck({ c }: { c: NonNullable<Summary["oms_check"]> }) {
       {c.ok
         ? `Packed + Ready-to-ship orders match OMSGuru (${c.oms.toLocaleString("en-IN")}) - checked ${at}`
         : `Differs from OMSGuru at ${at}: ${c.local.toLocaleString("en-IN")} here vs ${c.oms.toLocaleString("en-IN")} - ${c.retry ? "refreshing again" : "see Admin > OMSGuru sync"}`}
+    </span>
+  );
+}
+
+/** The proof that "generated" misses nothing: OMSGuru's own invoice list for the day, re-read hourly, vs this app. */
+function TrailCheck({ t }: { t: NonNullable<Summary["trail"]> }) {
+  const at = new Date(t.checked_at * 1000).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+  const off = t.channels.filter((c) => c.oms !== c.app);
+  return (
+    <span className={cx("mt-1 flex items-start gap-1.5 text-sm font-medium", t.complete ? "text-good-ink" : "text-crit-ink")}>
+      {t.complete ? <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden /> : <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />}
+      <span>
+        {t.complete
+          ? `Order trail complete: all ${t.oms.toLocaleString("en-IN")} AWBs OMSGuru made on this day are here - checked ${at}`
+          : `Order trail check at ${at}: ${t.app.toLocaleString("en-IN")} of ${t.oms.toLocaleString("en-IN")} OMSGuru AWBs are here (${off
+              .map((c) => `${c.name} ${c.app}/${c.oms}`)
+              .join(", ")}) - see Admin > OMSGuru sync`}
+        {t.added > 0 && <span className="font-normal text-muted"> · {t.added.toLocaleString("en-IN")} missed by the live sync were added by the check</span>}
+      </span>
     </span>
   );
 }
@@ -131,6 +159,7 @@ export default function Pending() {
               </span>
             )}
             {sum.oms_check && <OmsCheck c={sum.oms_check} />}
+            {sum.trail && <TrailCheck t={sum.trail} />}
           </>
         }
         actions={

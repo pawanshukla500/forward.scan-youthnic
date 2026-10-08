@@ -282,7 +282,7 @@ def sync_trigger(job: str, _: User = Depends(require_supervisor)):
     if job == "invoices":
         eng._last_urgent = 0  # noqa: SLF001 - manual trigger bypasses debounce
         eng.request_urgent()
-    elif job in ("open_orders", "cancel_sweep", "channels", "crosscheck", "exit_check", "cleanup", "history"):
+    elif job in ("open_orders", "cancel_sweep", "channels", "crosscheck", "exit_check", "cleanup", "history", "audit"):
         eng.request_full(job)
     else:
         raise HTTPException(400, "Unknown job")

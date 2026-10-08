@@ -14,6 +14,7 @@ In Transit - Meesho does it as soon as the label is printed, Flipkart at manifes
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
@@ -22,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..models import Channel, OmsOrder, Scan
+from ..models import Channel, OmsOrder, Scan, SyncState
 from ..timeutil import day_bounds_utc, dispatch_date_for, iso_utc, to_local, today_dispatch_date, utcnow
 from . import cache, tracking
 
@@ -159,8 +160,28 @@ def summary(db: Session, day: date) -> dict[str, Any]:
         "date": day.isoformat(), "is_today": day == today, "today": today.isoformat(),
         "retain_days": settings.retain_orders_days, "in_retention": day >= first,
         "counted_from": (tracking.start_date().isoformat() if tracking.start_date() else None),
+        "trail": trail_check(db, day, chans),
         "totals": totals, "channels": channels, "days": strip,
     }
+
+
+def trail_check(db: Session, day: date, chans: dict[int, Channel]) -> dict[str, Any] | None:
+    """The hourly order-trail audit (oms/sync.py step_audit) for this AWB day: every AWB OMSGuru invoiced vs the
+    AWBs here, per channel - the proof that "generated" (and so "pending") misses nothing. None = not checked."""
+    row = db.get(SyncState, "trail_audit")
+    try:
+        days = (json.loads(row.value).get("days") or {}) if row and row.value else {}
+    except ValueError:
+        return None
+    t = days.get(day.isoformat())
+    if not t:
+        return None
+    out = []
+    for cid, c in (t.get("channels") or {}).items():
+        ch = chans.get(int(cid)) if cid not in ("0", "") else None
+        out.append({"id": int(cid) if cid not in ("0", "") else None, "name": ch.name if ch else "Unmapped channel", **c})
+    out.sort(key=lambda x: (-x["oms"], x["name"]))
+    return {k: t.get(k) for k in ("checked_at", "complete", "oms", "app", "added")} | {"channels": out}
 
 
 def summary_cached(db: Session, day: date) -> dict[str, Any]:
