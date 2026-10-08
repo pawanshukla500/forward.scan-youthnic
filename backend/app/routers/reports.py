@@ -153,6 +153,27 @@ def avg_scan_seconds(db: Session, d: date, user_id: int | None = None) -> float 
     return round(gaps[len(gaps) // 2], 1)  # median: robust to the odd long pause
 
 
+def _span(df: date, dt: date, max_days: int) -> None:
+    """Every report reads its whole date range: an unbounded one (date_from=0001-01-01) froze or killed the server."""
+    if df > dt:
+        raise HTTPException(400, "From date is after To date")
+    if (dt - df).days >= max_days:
+        raise HTTPException(400, f"At most {max_days} days at a time - choose a shorter range")
+
+
+EXPORT_DAYS = 31
+EXPORT_XLSX_ROWS = 50_000  # openpyxl holds the sheet in memory (~330 MB per 50,000 rows)
+EXPORT_CSV_ROWS = 250_000
+REPORT_DAYS = 92
+
+
+def _too_many(db: Session, stmt, cap: int) -> None:
+    n = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery())) or 0
+    if n > cap:
+        raise HTTPException(400, f"{n:,} scans in this selection - export at most {cap:,} at a time (fewer days or one "
+                                 "sales channel)")
+
+
 def _scan_query(date_from: date, date_to: date, channel_id: int | None, user_id: int | None, result: str | None,
                 q: str | None, alerts_only: bool, courier: str | None = None):
     stmt = select(Scan).where(Scan.dispatch_date >= date_from, Scan.dispatch_date <= date_to)
@@ -165,13 +186,15 @@ def _scan_query(date_from: date, date_to: date, channel_id: int | None, user_id:
     elif result:
         stmt = stmt.where(Scan.result == result)
     if courier:
-        stmt = stmt.where(Scan.order_json.like(f'%"courier": {json.dumps(courier)}%'))
+        stmt = stmt.where(Scan.order_json.contains(f'"courier": {json.dumps(courier)}', autoescape=True))
     if alerts_only:
         stmt = stmt.where(Scan.alert != "")
     if q:
         norm = normalize_tracking(q)
         # Order id / invoice live in the copy saved with each scan (the order itself may be pruned).
-        stmt = stmt.where(or_(Scan.tracking_norm.like(f"%{norm}%"), func.upper(Scan.order_json).like(f"%{norm}%")))
+        # literal text: "_" / "%" typed in the search box are not wildcards
+        stmt = stmt.where(or_(Scan.tracking_norm.contains(norm, autoescape=True),
+                              func.upper(Scan.order_json).contains(norm, autoescape=True)))
     return stmt
 
 
@@ -183,6 +206,7 @@ def list_scans(
     db: Session = Depends(get_db), user: User = Depends(current_user),
 ):
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
+    _span(df, dt, EXPORT_DAYS if q or courier else 366)  # text search reads every order copy in the range
     stmt = _scan_query(df, dt, channel_id, user_id, result, q, alerts_only, courier)
     total = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery())) or 0
     rows = db.scalars(stmt.order_by(Scan.id.desc()).offset((page - 1) * page_size).limit(page_size)).unique()
@@ -193,12 +217,13 @@ def list_scans(
 def export_scans(
     date_from: str | None = None, date_to: str | None = None, channel_id: int | None = None,
     user_id: int | None = None, result: str | None = None, q: str | None = None, alerts_only: bool = False,
-    courier: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user),
+    courier: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_supervisor),
 ):
+    # staff only: the file holds buyer names, cities and pincodes
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
-    if (dt - df).days > 62:
-        raise HTTPException(400, "Export at most 62 days at a time")
+    _span(df, dt, EXPORT_DAYS)
     stmt = _scan_query(df, dt, channel_id, user_id, result, q, alerts_only, courier)
+    _too_many(db, stmt, EXPORT_XLSX_ROWS)
     scans = list(db.scalars(stmt.order_by(Scan.channel_id, Scan.scanned_at)).unique())
     ch = db.get(Channel, channel_id) if channel_id else None
     span = df.strftime("%d-%m-%Y") + ("" if df == dt else " to " + dt.strftime("%d-%m-%Y"))
@@ -215,23 +240,23 @@ def export_scans(
 def export_scans_csv(
     date_from: str | None = None, date_to: str | None = None, channel_id: int | None = None,
     user_id: int | None = None, result: str | None = None, q: str | None = None, alerts_only: bool = False,
-    courier: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user),
+    courier: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_supervisor),
 ):
     import csv
     import io
 
-    from ..services.exports import SCAN_COLUMNS, scan_row
+    from ..services.exports import SCAN_COLUMNS, csv_safe, scan_row
 
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
-    if (dt - df).days > 62:
-        raise HTTPException(400, "Export at most 62 days at a time")
-    scans = db.scalars(_scan_query(df, dt, channel_id, user_id, result, q, alerts_only, courier)
-                       .order_by(Scan.channel_id, Scan.scanned_at)).unique()
+    _span(df, dt, EXPORT_DAYS)
+    stmt = _scan_query(df, dt, channel_id, user_id, result, q, alerts_only, courier)
+    _too_many(db, stmt, EXPORT_CSV_ROWS)
+    scans = db.scalars(stmt.order_by(Scan.channel_id, Scan.scanned_at)).unique()
     out = io.StringIO()
     w = csv.writer(out)
     w.writerow([c for c, _ in SCAN_COLUMNS])
     for i, s in enumerate(scans, start=1):
-        w.writerow(scan_row(i, s))
+        w.writerow([csv_safe(v) for v in scan_row(i, s)])
     name = f"dispatch_{df.isoformat()}{'' if df == dt else '_to_' + dt.isoformat()}.csv"
     return _file("\ufeff" + out.getvalue(), name, "text/csv; charset=utf-8")
 
@@ -241,6 +266,7 @@ def report_filters(date_from: str | None = None, date_to: str | None = None, db:
                    user: User = Depends(current_user)):
     """Couriers and operators that actually appear in the selected dates."""
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
+    _span(df, dt, REPORT_DAYS)
     couriers: set[str] = set()
     for (oj,) in db.execute(select(Scan.order_json).where(Scan.dispatch_date >= df, Scan.dispatch_date <= dt, Scan.order_json != "")):
         try:
@@ -263,6 +289,7 @@ def sku_summary(date_from: str | None = None, date_to: str | None = None, channe
     from ..services import reconcile
 
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
+    _span(df, dt, REPORT_DAYS)
     chans = {c.id: c.name for c in db.scalars(select(Channel))}
     agg: dict[str, dict] = {}
     q = select(Scan.order_json, Scan.channel_id).where(Scan.dispatch_date >= df, Scan.dispatch_date <= dt,
@@ -303,6 +330,7 @@ def sku_summary(date_from: str | None = None, date_to: str | None = None, channe
 def operators(date_from: str | None = None, date_to: str | None = None, channel_id: int | None = None,
               db: Session = Depends(get_db), user: User = Depends(current_user)):
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
+    _span(df, dt, REPORT_DAYS)
     q = select(Scan.user_id, Scan.result, Scan.alert, Scan.flags, Scan.station, Scan.scanned_at).where(
         Scan.dispatch_date >= df, Scan.dispatch_date <= dt, ~scanning.is_mark())
     if channel_id:

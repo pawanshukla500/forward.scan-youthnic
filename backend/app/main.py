@@ -19,7 +19,7 @@ from .db import Base, SessionLocal, drop_retired_indexes, engine, ensure_columns
 from .models import User
 from .oms import sync as sync_module
 from .routers import admin, auth, manifests, mobile_app, reconcile, reports, scan
-from .security import hash_password, password_problem, websocket_user
+from .security import COOKIE_NAME, hash_password, password_problem, weak_secret, websocket_user
 from .services import backup
 from .services.realtime import hub
 from .services.scanning import clear_shipped_checks
@@ -84,6 +84,9 @@ async def lifespan(app: FastAPI):
     added = ensure_columns()
     if added:
         log.info("Database upgraded: added %s", ", ".join(added))
+    if weak_secret():
+        log.warning("APP_SECRET_KEY is short or the example one - sign-in tokens can be forged; set a long random "
+                    "value in .env (python -c \"import secrets; print(secrets.token_hex(32))\")")
     if settings.scan_retention_days != settings.scan_retention_requested:
         log.warning("SCAN_RETENTION_DAYS=%s is under a year - keeping scans %s days instead "
                     "(set SCAN_RETENTION_FORCE=true if you really mean it)",
@@ -118,7 +121,75 @@ async def lifespan(app: FastAPI):
         await sync_module.engine_instance.stop()
 
 
-app = FastAPI(title="Forward Scan - OMSGuru Dispatch", version="1.0.0", lifespan=lifespan)
+# No public /docs, /redoc, /openapi.json: the full API map is not handed to anyone who asks.
+app = FastAPI(title="Forward Scan - OMSGuru Dispatch", version="1.0.0", lifespan=lifespan,
+              docs_url=None, redoc_url=None, openapi_url=None)
+
+MAX_BODY_BYTES = 1_000_000  # the largest real request is a few KB; bodies are read into memory before checks
+_SECURITY_HEADERS = [
+    (b"x-content-type-options", b"nosniff"),
+    (b"referrer-policy", b"same-origin"),
+    (b"x-frame-options", b"DENY"),
+    (b"permissions-policy", b"camera=(self), microphone=(), geolocation=()"),
+]
+
+
+class _TooLarge(HTTPException):
+    def __init__(self) -> None:
+        super().__init__(413, "Request too large")
+
+
+def _same_site(origin: bytes | None, host: bytes | None) -> bool:
+    from urllib.parse import urlsplit
+
+    if not origin:
+        return True  # not a browser cross-site request (apps, scripts, same-origin GETs)
+    o = origin.decode("latin-1")
+    allowed = {x.strip().rstrip("/") for x in settings.cors_origins.split(",") if x.strip()}
+    # same host name (any port: the Vite dev server proxies from another one)
+    own = (host or b"").decode("latin-1").rsplit(":", 1)[0].strip("[]").lower()
+    return (urlsplit(o).hostname or "") == own or o.rstrip("/") in allowed
+
+
+class RequestGuard:
+    """Pure ASGI (no buffering): refuse bodies over MAX_BODY_BYTES before reading them, refuse state changes that a
+    browser sends from another site with the sign-in cookie (CSRF), and add basic security headers."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = dict(scope.get("headers") or [])
+        length = headers.get(b"content-length")
+        if length and length.isdigit() and int(length) > MAX_BODY_BYTES:
+            return await JSONResponse({"detail": "Request too large"}, status_code=413)(scope, receive, send)
+        if scope["method"] not in ("GET", "HEAD", "OPTIONS") and b"authorization" not in headers \
+                and b"cookie" in headers and not _same_site(headers.get(b"origin"), headers.get(b"host")):
+            return await JSONResponse({"detail": "Cross-site request refused"}, status_code=403)(scope, receive, send)
+
+        seen = 0
+
+        async def limited_receive():
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > MAX_BODY_BYTES:
+                    raise _TooLarge()
+            return message
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                have = {k.lower() for k, _ in message.get("headers", [])}
+                message["headers"] = list(message.get("headers", [])) + [h for h in _SECURITY_HEADERS if h[0] not in have]
+            await send(message)
+
+        await self.app(scope, limited_receive, send_with_headers)
+
+
+app.add_middleware(RequestGuard)
 
 if settings.cors_origins:
     app.add_middleware(
@@ -170,6 +241,10 @@ async def ws_endpoint(ws: WebSocket):
         finally:
             db.close()
 
+    origin = ws.headers.get("origin")
+    if origin and ws.cookies.get(COOKIE_NAME) and not _same_site(origin.encode("latin-1"), ws.headers.get("host", "").encode("latin-1")):
+        await ws.close(code=4403)  # another site's page using this browser's sign-in cookie
+        return
     user = await asyncio.to_thread(who)
     if not user:
         await ws.close(code=4401)

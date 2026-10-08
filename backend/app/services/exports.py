@@ -58,6 +58,34 @@ def scan_row(i: int, s: Scan) -> list:
     ]
 
 
+def _defang(wb) -> None:
+    """Buyer names / cities are typed by customers on the marketplaces: text starting with "=" must stay text in
+    the file, not become a live formula (=HYPERLINK(...) leaking the row to a website when clicked)."""
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                if c.data_type == "f":
+                    c.data_type = "s"
+
+
+_CSV_RISKY = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(v):
+    """The same for CSV: a leading ' keeps =, +, -, @ text from being run as a formula when opened in Excel."""
+    if isinstance(v, str) and v.startswith(_CSV_RISKY) and not _is_number(v):
+        return "'" + v
+    return v
+
+
+def _is_number(v: str) -> bool:
+    try:
+        float(v)
+        return True
+    except ValueError:
+        return False
+
+
 def _style_sheet(ws, widths: Sequence[int], header_row: int) -> None:
     head_fill = PatternFill("solid", fgColor="1F2937")
     for col, w in enumerate(widths, start=1):
@@ -96,6 +124,7 @@ def scans_xlsx(scans: Iterable[Scan], title: str, summary: list[tuple[str, objec
                 c.fill = warn_fill
     _style_sheet(ws, [w for _, w in SCAN_COLUMNS], header_row)
     buf = io.BytesIO()
+    _defang(wb)
     wb.save(buf)
     return buf.getvalue()
 
@@ -134,6 +163,7 @@ def manifest_xlsx(scans: Sequence[Scan], *, channel_name: str, dispatch_date: st
     ws.append(["Handed over by (name / sign):", "", "", "Received by courier (name / sign):"])
     ws.append(["Date & time:", "", "", "Date & time:"])
     buf = io.BytesIO()
+    _defang(wb)
     wb.save(buf)
     return buf.getvalue()
 
@@ -159,6 +189,7 @@ def pending_xlsx(orders: Iterable[OmsOrder], title: str) -> bytes:
         ])
     _style_sheet(ws, [w for _, w in cols], header_row)
     buf = io.BytesIO()
+    _defang(wb)
     wb.save(buf)
     return buf.getvalue()
 
@@ -181,11 +212,11 @@ def oms_dispatch_csv(scans: Iterable[Scan]) -> str:
         local = to_local(s.scanned_at)
         subs = [x for x in od.get("sub_order_ids") or [] if x] or [""]
         for sub in subs:
-            w.writerow([
+            w.writerow([csv_safe(v) for v in [
                 s.channel.name if s.channel else "", od.get("channel_order_id", ""), sub,
                 od.get("invoice_id", ""), s.tracking_raw, od.get("courier", ""),
                 local.strftime("%d-%m-%Y"), local.strftime("%H:%M:%S"),
-            ])
+            ]])
     return out.getvalue()
 
 
@@ -241,6 +272,7 @@ def reconcile_xlsx(rows: list[dict], title: str, summary: dict | None = None) ->
             c.font = Font(bold=True)
         _style_sheet(s2, [30, 14, 10, 18, 10, 10, 20, 10, 10], 1)
     buf = io.BytesIO()
+    _defang(wb)
     wb.save(buf)
     return buf.getvalue()
 
@@ -277,5 +309,6 @@ def channel_summary_xlsx(periods: list[str], channels: list[dict], cells: dict, 
                       v.get("alerts", 0), v.get("DUPLICATE", 0), v.get("WRONG_CHANNEL", 0), v.get("BLOCKED", 0)])
     _style_sheet(d, [12, 28, 10, 10, 11, 11, 14, 14, 18, 20], 1)
     buf = io.BytesIO()
+    _defang(wb)
     wb.save(buf)
     return buf.getvalue()

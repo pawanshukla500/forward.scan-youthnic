@@ -98,10 +98,12 @@ def _channel_summary(db: Session, df: date, dt: date, group: str):
         c = cells.setdefault((key(d), cid), {})
         c[outcome] = c.get(outcome, 0) + n
     periods: list[str] = []
+    seen: set[str] = set()
     d = df
     while d <= dt:
         k = key(d)
-        if k not in periods:
+        if k not in seen:
+            seen.add(k)
             periods.append(k)
         d += timedelta(days=1)
     used = {cid for (_, cid) in cells}
@@ -135,6 +137,8 @@ def channel_summary_export(date_from: str | None = None, date_to: str | None = N
     df = _parse_day(date_from) if date_from else dt - timedelta(days=364)
     if df > dt:
         raise HTTPException(400, "From date is after To date")
+    if (dt - df).days > 3 * 366 + 31:  # as the page: an unbounded range ran for hours
+        raise HTTPException(400, "At most about 3 years at a time")
     periods, chans, cells = _channel_summary(db, df, dt, group)
     title = f"Scanned shipments by sales channel ({'monthly' if group == 'month' else 'daily'}) - {df:%d-%m-%Y} to {dt:%d-%m-%Y}"
     return _file(channel_summary_xlsx(periods, chans, cells, title),

@@ -170,7 +170,7 @@ def test_dashboard_and_exports(client):
     assert client.post(f"/api/manifests/{mid}/close").status_code == 200
     r = client.get(f"/api/manifests/{mid}/export.xlsx")
     assert r.status_code == 200 and r.content[:2] == b"PK"
-    csv_r = client.get("/api/oms-dispatch/export.csv")
+    csv_r = client.get("/api/oms-dispatch/export.csv", params={"mark": "true"})  # a GET only marks when asked
     assert csv_r.status_code == 200 and "Channel Order ID" in csv_r.text
     done = client.post("/api/oms-dispatch/mark-done", json={"date": dash["date"]}).json()
     assert done["updated"] >= 1
