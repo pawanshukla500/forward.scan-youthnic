@@ -91,6 +91,15 @@ class DuplicateGuard(
     fun inCooldown(now: Long = System.currentTimeMillis()): Boolean =
         lastEmittedAt > 0L && now >= lastEmittedAt && now - lastEmittedAt < anyCodeCooldownMs
 
+    /** The send of [code] failed: aiming at it again sends it again (no 8 s wait). */
+    @Synchronized
+    fun forget(code: String) {
+        if (lastCode == code.trim()) {
+            lastCode = ""
+            lastSeenAt = 0L
+        }
+    }
+
     @Synchronized
     fun markEmitted(code: String, now: Long = System.currentTimeMillis()) {
         val clean = code.trim()

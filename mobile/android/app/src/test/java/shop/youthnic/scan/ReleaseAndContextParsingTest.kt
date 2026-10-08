@@ -105,4 +105,15 @@ class ReleaseAndContextParsingTest {
         assertNull(olderServer.awbToday)
         assertEquals(7, olderServer.pendingTotal)
     }
+
+    @Test
+    fun notFoundScansAreCountedApart() {
+        val ctx = ScanContext.fromJson(
+            JSONObject("""{"stats": {"scanned": 120, "not_found": 3}, "awb": {"generated": 200, "pending": 80, "overdue": 0, "pct": 60}, "queue": [], "queue_total": 80}""")
+        )
+        assertEquals(120, ctx.scannedToday)
+        assertEquals(3, ctx.notFoundToday)
+        // an older server without the field
+        assertEquals(0, ScanContext.fromJson(JSONObject("""{"stats": {"scanned": 5}, "awb": {}, "queue": []}""")).notFoundToday)
+    }
 }

@@ -1,5 +1,6 @@
 package shop.youthnic.scan.data
 
+import okhttp3.ConnectionPool
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -22,11 +23,21 @@ class ApiClient(private val sessionManager: SessionManager) {
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(25, TimeUnit.SECONDS)  // never "Sending..." for a minute on weak Wi-Fi
         .retryOnConnectionFailure(true)
         .build()
 
-    /** Scans are never re-sent by OkHttp on a reset connection: the first attempt may already be saved. */
-    private val scanClient: OkHttpClient = client.newBuilder().retryOnConnectionFailure(false).build()
+    /**
+     * Scans: never re-sent by OkHttp on a reset connection (the first attempt may already be saved), a whole call
+     * at most 12 s (the server answers within ~3 s, OMSGuru lookup included), and their own connections so a scan
+     * never waits behind a Pending-list download.
+     */
+    private val scanClient: OkHttpClient = client.newBuilder()
+        .retryOnConnectionFailure(false)
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .callTimeout(12, TimeUnit.SECONDS)
+        .connectionPool(ConnectionPool(2, 5, TimeUnit.MINUTES))
+        .build()
 
     private fun baseUrl(): String {
         return sessionManager.serverUrl.removeSuffix("/")

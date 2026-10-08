@@ -58,7 +58,7 @@
             android:exported="false"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.ForwardScan.Scanner"
-            android:configChanges="orientation|screenSize|keyboardHidden" />
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode" />
 
         <activity
             android:name=".ui.SettingsActivity"

@@ -139,10 +139,13 @@ data class PendingAwb(
 
 /** Everything the scan screen shows besides the scan itself (server: GET /api/scan-context). */
 data class ScanContext(
+    /** successful scans today (verified + check) */
     val scannedToday: Int,
     val awb: AwbCounts,
     val queue: List<PendingAwb>,
-    val queueTotal: Int
+    val queueTotal: Int,
+    /** "Not found" scans today: flagged, not counted in [scannedToday] */
+    val notFoundToday: Int = 0
 ) {
     /** Unscanned AWBs: today's pending + overdue (the same number the Pending list counts). */
     val pendingTotal: Int
@@ -161,7 +164,8 @@ data class ScanContext(
                 scannedToday = stats.optInt("scanned", 0),
                 awb = awb,
                 queue = queue,
-                queueTotal = json.optInt("queue_total", awb.pending + awb.overdue)
+                queueTotal = json.optInt("queue_total", awb.pending + awb.overdue),
+                notFoundToday = stats.optInt("not_found", 0)
             )
         }
     }

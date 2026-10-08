@@ -10,6 +10,8 @@ import android.hardware.camera2.CaptureRequest
 import android.media.AudioManager
 import android.os.Bundle
 import android.os.SystemClock
+import androidx.camera.core.TorchState
+import kotlin.math.abs
 import android.util.Range
 import android.util.Size
 import android.view.MotionEvent
@@ -131,6 +133,11 @@ class ScannerActivity : AppCompatActivity() {
     /** Results since the scanner was opened (by [Cue]) and the running scan number shown on the card. */
     private val tally = IntArray(Cue.values().size)
     private var scanSeq = 0
+    /** Sent but not confirmed (timeout): the rescan's "already saved" answer is then the first count of it. */
+    private val unconfirmed = HashSet<String>()
+    /** Last scan-context load (elapsedRealtime) and the pending rows last drawn into the open sheet. */
+    private var lastCtxAt = 0L
+    private var renderedQueue: List<PendingAwb>? = null
     private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     /** Colour, icon and words of one result: shared by the stamp, the card banner, the legend and the tally. */
@@ -158,6 +165,14 @@ class ScannerActivity : AppCompatActivity() {
         /** Header numbers and the update check refresh this often while the scanner is open. */
         private const val REFRESH_EVERY_MS = 60_000L
         private const val PENDING_ROWS = 50
+        /** Header numbers only: the Pending sheet asks for [PENDING_ROWS]. */
+        private const val HEADER_ROWS = 12
+        /** After a scan the numbers refresh at most this often (20 phones x 1 scan / 3 s = a lot of requests). */
+        private const val REFRESH_AFTER_SCAN_MIN_MS = 5_000L
+        /** A label half inside the camera window still scans. */
+        private const val EDGE_SLACK = 0.10f
+        private const val STATE_TALLY = "tally"
+        private const val STATE_SEQ = "scan_seq"
         private const val FRAME_MS = 16L
         private const val IDLE_CHECK_MS = 5_000L
     }
@@ -192,6 +207,11 @@ class ScannerActivity : AppCompatActivity() {
 
         initUi()
         initBarcodeScanner()
+        savedInstanceState?.let { st ->
+            st.getIntArray(STATE_TALLY)?.takeIf { it.size == tally.size }?.copyInto(tally)
+            scanSeq = st.getInt(STATE_SEQ, 0)
+            if (tally.any { it > 0 }) renderTally()
+        }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             startCamera()
@@ -223,6 +243,12 @@ class ScannerActivity : AppCompatActivity() {
         idleJob = null
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putIntArray(STATE_TALLY, tally)  // the shift's tally survives the phone recreating this screen
+        outState.putInt(STATE_SEQ, scanSeq)
+    }
+
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) noteActivity()
         return super.dispatchTouchEvent(ev)
@@ -251,7 +277,10 @@ class ScannerActivity : AppCompatActivity() {
         binding.cardIdleState.visibility = View.VISIBLE
 
         // Not clickable, so touches pass through to the screen below while it blinks.
-        flashView = View(this).apply {
+        // hasOverlappingRendering = false: fading it does not redraw the whole screen off-screen every frame
+        flashView = object : View(this) {
+            override fun hasOverlappingRendering() = false
+        }.apply {
             alpha = 0f
             visibility = View.GONE
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
@@ -293,18 +322,21 @@ class ScannerActivity : AppCompatActivity() {
 
     /** After a scan: refresh the numbers shortly (several stations scan the same marketplace). */
     private fun refreshSoon() {
-        refreshSoonJob?.cancel()
+        if (refreshSoonJob?.isActive == true) return  // one is already coming
+        val wait = maxOf(1200L, REFRESH_AFTER_SCAN_MIN_MS - (SystemClock.elapsedRealtime() - lastCtxAt))
         refreshSoonJob = lifecycleScope.launch {
-            delay(1200)
+            delay(wait)
             loadContext()
         }
     }
 
     private suspend fun loadContext(): Boolean {
         val api = (application as ForwardScanApp).apiClient
-        val result = withContext(Dispatchers.IO) { api.getScanContext(channelId, PENDING_ROWS) }
+        val rows = if (pendingSheet != null) PENDING_ROWS else HEADER_ROWS
+        val result = withContext(Dispatchers.IO) { api.getScanContext(channelId, rows) }
         val ctx = result.getOrNull()
         if (ctx != null) {
+            lastCtxAt = SystemClock.elapsedRealtime()
             scanContext = ctx
             setOnline(true)
             renderCounts(ctx)
@@ -319,7 +351,12 @@ class ScannerActivity : AppCompatActivity() {
     }
 
     private fun renderCounts(ctx: ScanContext) {
-        binding.tvProgressScanned.text = getString(R.string.scanned_today_format, Ui.count(ctx.scannedToday))
+        // successful scans only; "Not found" ones are flagged next to it, not counted
+        binding.tvProgressScanned.text = if (ctx.notFoundToday > 0) {
+            getString(R.string.scanned_today_not_found_format, Ui.count(ctx.scannedToday), Ui.count(ctx.notFoundToday))
+        } else {
+            getString(R.string.scanned_today_format, Ui.count(ctx.scannedToday))
+        }
         val pending = ctx.pendingTotal
         if (pending > 0) {
             binding.tvProgressPending.text = getString(R.string.pending_count_format, Ui.count(pending))
@@ -434,6 +471,8 @@ class ScannerActivity : AppCompatActivity() {
             cameraRunning = true
             boundSharp = sharp
             setTorchUi(false)
+            cam.cameraInfo.torchState.removeObservers(this)
+            cam.cameraInfo.torchState.observe(this) { state -> setTorchUi(state == TorchState.ON) }
             binding.layoutCameraPaused.visibility = View.GONE
             binding.tvScannerHint.text = getString(R.string.aim_at_awb)
             updateKeepScreenOn()
@@ -504,6 +543,7 @@ class ScannerActivity : AppCompatActivity() {
         if (!cameraRunning) return
         cameraRunning = false
         camera?.cameraInfo?.cameraState?.removeObservers(this)
+        camera?.cameraInfo?.torchState?.removeObservers(this)
         cameraProvider?.unbindAll()
         camera = null
         setTorchUi(false)
@@ -520,12 +560,12 @@ class ScannerActivity : AppCompatActivity() {
     }
 
     /**
-     * Screen stays on while the camera is open (packers rarely touch the phone between scans), but only when
-     * the idle pause is on - then it is never longer than [CameraTuning.IDLE_PAUSE_MS] after the last scan.
+     * Screen stays on while the camera is open: packers rarely touch the phone between scans, and a scan is not a
+     * touch, so the phone's own screen timeout went dark mid-shift. With the idle pause on, the camera (and so
+     * this) closes [CameraTuning.IDLE_PAUSE_MS] after the last scan.
      */
     private fun updateKeepScreenOn() {
-        val autoPause = (application as ForwardScanApp).sessionManager.isAutoPauseCamera
-        if (cameraRunning && autoPause) {
+        if (cameraRunning) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -566,10 +606,13 @@ class ScannerActivity : AppCompatActivity() {
         }
         lastAnalyzedAt = now
 
-        val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+        val rotation = imageProxy.imageInfo.rotationDegrees
+        val uprightW = if (rotation % 180 == 0) imageProxy.width else imageProxy.height
+        val uprightH = if (rotation % 180 == 0) imageProxy.height else imageProxy.width
+        val image = InputImage.fromMediaImage(mediaImage, rotation)
         scanner.process(image)
             .addOnSuccessListener { barcodes ->
-                onBarcodesDetected(barcodes)
+                onBarcodesDetected(visibleFirst(barcodes, uprightW, uprightH))
             }
             .addOnFailureListener {
                 // Ignore transient frame decode failure
@@ -578,6 +621,33 @@ class ScannerActivity : AppCompatActivity() {
                 // Ensure imageProxy is always closed in every code path
                 imageProxy.close()
             }
+    }
+
+    /**
+     * Only barcodes the packer can see, nearest the middle first. The preview shows the middle of the camera frame
+     * (FILL_CENTER) but the reader gets all of it: a neighbouring packet or the polybag's product code outside the
+     * window was sent instead of the AWB in it. [w] x [h] = the upright frame size.
+     */
+    private fun visibleFirst(barcodes: List<Barcode>, w: Int, h: Int): List<Barcode> {
+        if (barcodes.size <= 1 && barcodes.firstOrNull()?.boundingBox == null) return barcodes
+        val vw = binding.previewView.width
+        val vh = binding.previewView.height
+        if (w <= 0 || h <= 0 || vw <= 0 || vh <= 0) return barcodes
+        val scale = maxOf(vw.toFloat() / w, vh.toFloat() / h)  // FILL_CENTER: cover the view, cut the rest evenly
+        val shownW = vw / scale
+        val shownH = vh / scale
+        val left = (w - shownW) / 2f - shownW * EDGE_SLACK
+        val right = (w + shownW) / 2f + shownW * EDGE_SLACK
+        val top = (h - shownH) / 2f - shownH * EDGE_SLACK
+        val bottom = (h + shownH) / 2f + shownH * EDGE_SLACK
+        val cx = w / 2f
+        val cy = h / 2f
+        return barcodes
+            .filter { b ->
+                val r = b.boundingBox ?: return@filter true
+                r.exactCenterX() in left..right && r.exactCenterY() in top..bottom
+            }
+            .sortedBy { b -> b.boundingBox?.let { abs(it.exactCenterX() - cx) + abs(it.exactCenterY() - cy) } ?: Float.MAX_VALUE }
     }
 
     private fun onBarcodesDetected(barcodes: List<Barcode>) {
@@ -633,7 +703,11 @@ class ScannerActivity : AppCompatActivity() {
                 displayScanResult(rawAwb, scanResponse)
                 refreshSoon()
             } else {
-                when (val ex = result.exceptionOrNull()) {
+                val ex = result.exceptionOrNull()
+                // Not saved / not confirmed: aiming at the same label again must send it again (re-sending is safe -
+                // the server answers "already saved" for this packer's own scan of a moment ago).
+                if (ex !is AuthExpiredException) duplicateGuard.forget(rawAwb)
+                when (ex) {
                     is NetworkException -> if (ex.isOffline) displayNetworkError(rawAwb) else displayNotConfirmed(rawAwb)
                     is AuthExpiredException -> goToLogin()
                     else -> {
@@ -667,12 +741,19 @@ class ScannerActivity : AppCompatActivity() {
         binding.tvVerdictAction.visibility = if (action.isBlank()) View.GONE else View.VISIBLE
 
         val time = clock.format(Date())
+        // The scan number counts successful scans only (OK / Check). Not found, duplicate and stop answers go into
+        // their own tally pill (flagged) but are not scans.
+        val success = counted && (cue == Cue.OK || cue == Cue.CHECK)
         if (counted) {
-            scanSeq++
             tally[cue.ordinal]++
             renderTally()
         }
-        binding.tvScanSeq.text = if (counted) getString(R.string.scan_seq_format, scanSeq, time) else time
+        if (success) scanSeq++
+        binding.tvScanSeq.text = when {
+            success -> getString(R.string.scan_seq_format, scanSeq, time)
+            counted && cue == Cue.NOT_FOUND -> getString(R.string.scan_not_counted_format, time)
+            else -> time
+        }
         binding.scrollResultArea.scrollTo(0, 0)
 
         // A small "pop" so a second OK in a row visibly replaces the first one.
@@ -802,7 +883,9 @@ class ScannerActivity : AppCompatActivity() {
         }
         val wrong = vType == VerdictType.WRONG_BARCODE
         // the packer's own scan of a moment ago, sent again (no answer in time): OK, but already in the tally
-        val repeat = response.code == "ALREADY_SAVED"
+        val norm = BarcodeRules.normalizeTracking(awb)
+        val firstAnswer = unconfirmed.remove(norm)
+        val repeat = response.code == "ALREADY_SAVED" && !firstAnswer
         val stamp = getString(if (wrong) R.string.signal_wrong_barcode else styleOf(cue).stamp)
         // nothing was saved for a wrong barcode: not a scan, not in the tally / scan number
         showVerdict(cue, titleFor(vType), message, actionFor(response), stamp, counted = !wrong && !repeat)
@@ -844,6 +927,7 @@ class ScannerActivity : AppCompatActivity() {
     /** Sent, but no answer in time: it may be saved. Rescanning shows the result (the server answers OK for
      *  the same packer's own scan a moment ago - never "Duplicate - set aside"). */
     private fun displayNotConfirmed(awb: String) {
+        unconfirmed += BarcodeRules.normalizeTracking(awb)
         showVerdict(
             Cue.CHECK, getString(R.string.verdict_not_confirmed), getString(R.string.not_confirmed_message),
             getString(R.string.action_not_confirmed), getString(R.string.signal_not_confirmed), counted = false
@@ -935,7 +1019,8 @@ class ScannerActivity : AppCompatActivity() {
         sb.tvPendingChannel.text = channelName
         sb.btnClosePending.setOnClickListener { sheet.dismiss() }
         sb.btnRefreshPending.setOnClickListener { reloadPending(sb) }
-        blockAnalysisWhileShown(sheet) { if (pendingSheet === sb) pendingSheet = null }
+        blockAnalysisWhileShown(sheet) { if (pendingSheet === sb) pendingSheet = null; renderedQueue = null }
+        renderedQueue = null
         pendingSheet = sb
         scanContext?.let { renderPendingSheet(sb, it) }
         sheet.show()
@@ -964,6 +1049,8 @@ class ScannerActivity : AppCompatActivity() {
         sb.tvSumOverdue.text = Ui.count(ctx.awb.overdue)
         sb.tvSumScanned.text = Ui.count(ctx.scannedToday)
 
+        if (ctx.queue == renderedQueue && sb.pendingList.childCount > 0) return  // same rows: keep the scroll position
+        renderedQueue = ctx.queue
         sb.pendingList.removeAllViews()
         if (ctx.queue.isEmpty()) {
             sb.tvPendingEmpty.text = getString(R.string.pending_none)

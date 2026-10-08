@@ -169,7 +169,7 @@
     <string name="signal_not_sent">NOT SENT</string>
     <string name="action_ok">Put it in the bag</string>
     <string name="action_duplicate">Already scanned - not counted again. Set this packet aside.</string>
-    <string name="action_not_found">Saved as unverified - it turns OK by itself when OMSGuru syncs</string>
+    <string name="action_not_found">Flagged - NOT counted as scanned. OMSGuru does not have this AWB yet: keep the packet aside for a supervisor. It counts by itself if the order syncs</string>
     <string name="action_check">Saved - check the packet before it goes</string>
     <string name="action_check_not_rts">Keep the packet and tell a supervisor - the order must be Ready to ship in OMSGuru before pickup</string>
     <string name="action_check_partial_cancel">Open the packet and take out the cancelled items before it goes</string>
@@ -213,4 +213,6 @@
     <string name="pending_shipped_in_oms">Shipped in OMSGuru, not scanned</string>
     <string name="action_already_saved">Already saved a moment ago - put it in the bag (not counted twice)</string>
     <string name="action_old_label">Old label - OMSGuru made a new AWB for this order. Print the new label and scan that</string>
+    <string name="scan_not_counted_format">Not counted · %1$s</string>
+    <string name="scanned_today_not_found_format">%1$s scanned today · %2$s not found</string>
 </resources>
