@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from datetime import date as date_type
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -274,11 +276,20 @@ def sync_status(_: User = Depends(require_supervisor)):
     return eng.status()
 
 
+SYNC_TRIGGER_COOLDOWN = 30
+_last_trigger: dict[str, float] = {}
+
+
 @router.post("/sync/{job}")
 def sync_trigger(job: str, _: User = Depends(require_supervisor)):
     eng = get_engine()
     if not eng:
         raise HTTPException(400, "Sync is disabled (SYNC_ENABLED=false)")
+    # a button pressed again and again must not burn OMSGuru API credits the scans need
+    now = time.monotonic()
+    if now - _last_trigger.get(job, -1e9) < SYNC_TRIGGER_COOLDOWN:
+        raise HTTPException(429, f"Already started a moment ago - wait {SYNC_TRIGGER_COOLDOWN} seconds")
+    _last_trigger[job] = now
     if job == "invoices":
         eng._last_urgent = 0  # noqa: SLF001 - manual trigger bypasses debounce
         eng.request_urgent()

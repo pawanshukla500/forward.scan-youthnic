@@ -138,3 +138,49 @@ def test_sync_keeps_marks_and_packer_flags():
         for awb in ("SECMARK0001", "SECFLAG0001"):
             db.query(Scan).filter(Scan.tracking_norm == awb).delete()
             db.query(OmsOrder).filter(OmsOrder.tracking_norm == awb).delete()
+
+
+def test_one_account_cannot_flood_scans(admin, monkeypatch):
+    from app.routers import scan as scan_router
+
+    monkeypatch.setattr(scan_router, "SCAN_RATE_PER_MIN", 3)
+    monkeypatch.setattr(scan_router, "_scan_times", {})
+    with session_scope() as db:
+        ch = db.scalar(select(Channel).where(Channel.scan_enabled.is_(True)))
+    codes = [admin.post("/api/scan", json={"channel_id": ch.id if ch else 1, "tracking": f"RATE{i:08d}"}).status_code
+             for i in range(5)]
+    assert codes[3] == 429 and codes[4] == 429 and 429 not in codes[:3]
+
+
+def test_manual_sync_buttons_have_a_cooldown(admin, monkeypatch):
+    from app.routers import admin as admin_router
+
+    monkeypatch.setattr(admin_router, "_last_trigger", {})
+    monkeypatch.setattr(admin_router, "get_engine", lambda: SimpleNamespace(request_full=lambda job: None,
+                                                                          request_urgent=lambda: None, _last_urgent=0))
+    assert admin.post("/api/admin/sync/audit").status_code == 200
+    assert admin.post("/api/admin/sync/audit").status_code == 429
+    assert admin.post("/api/admin/sync/cleanup").status_code == 200  # another job is its own button
+
+
+def test_batch_sheet_with_buyer_pincodes_is_staff_only():
+    with _scanner_client() as sc:
+        assert sc.get("/api/manifests/1/export.xlsx").status_code == 403
+
+
+def test_a_failing_scan_is_recorded_for_rescanning(admin, monkeypatch):
+    """9 Oct 2026: a database error failed every scan for 4 hours and nothing showed which packets to scan again."""
+    from app.models import ScanEvent
+    from app.routers import scan as scan_router
+
+    def boom(*a, **k):
+        raise RuntimeError("database said no")
+
+    monkeypatch.setattr(scan_router, "process_scan", boom)
+    with session_scope() as db:
+        ch = db.scalar(select(Channel).where(Channel.scan_enabled.is_(True)))
+    r = admin.post("/api/scan", json={"channel_id": ch.id, "tracking": "FAILSAVE0001"})
+    assert r.status_code == 500 and "NOT saved" in r.json()["detail"]
+    with session_scope() as db:
+        ev = db.scalar(select(ScanEvent).where(ScanEvent.tracking_norm == "FAILSAVE0001"))
+        assert ev is not None and ev.outcome == "ERROR" and "database said no" in ev.message

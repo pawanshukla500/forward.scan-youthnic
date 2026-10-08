@@ -381,7 +381,7 @@ export default function Scans() {
         </div>
 
         <div className="min-w-0">
-          {view === "scans" && <ScanSheet data={scans} colorOf={colorOf} sup={sup} onVoid={(s) => void voidScan(s)} offset={(page - 1) * 50} />}
+          {view === "scans" && <ScanSheet data={scans} colorOf={colorOf} sup={sup} onVoid={(s) => void voidScan(s)} offset={(page - 1) * 50} q={q} />}
           {view === "pending" && <PendingSheet data={pending} colorOf={colorOf} offset={(page - 1) * 100} />}
           {view === "sku" && <SkuSheet rows={skus} />}
           {view === "operators" && <OperatorSheet rows={ops} />}
@@ -478,20 +478,69 @@ function MarketChip({ name, color }: { name: string; color: string }) {
   );
 }
 
+/** Where an AWB / order id stands when no scan matches the search: pending here, cancelled, or not in the app. */
+function AwbLookup({ q }: { q: string }) {
+  const [res, setRes] = useState<{ orders: Order[] } | null | "error">(null);
+  useEffect(() => {
+    let on = true;
+    setRes(null);
+    api<{ orders: Order[] }>(`/api/lookup${qs({ q })}`)
+      .then((r) => on && setRes(r))
+      .catch(() => on && setRes("error"));
+    return () => {
+      on = false;
+    };
+  }, [q]);
+  if (res === null) return <SkeletonRows />;
+  if (res === "error" || res.orders.length === 0)
+    return (
+      <Empty title={`"${q}" is not in the app`}>
+        Not scanned, and OMSGuru has not given the app an order with this AWB or order id (or it is not an AWB).
+      </Empty>
+    );
+  const state = (o: Order) => {
+    if (o.status_group === "CANCELLED" || o.status_group === "RETURN") return `${o.status_text || "Cancelled"} in OMSGuru - not pending`;
+    if (o.status_group === "REPLACED") return o.status_text || "AWB replaced by a new label";
+    const due = o.dispatch_due;
+    return `NOT scanned yet - pending${due ? (due.state === "overdue" ? `, overdue ${due.age_days} day${due.age_days === 1 ? "" : "s"}` : ", due today") : ""}`;
+  };
+  return (
+    <div className="card mx-4 my-4 px-5 py-4 text-sm sm:mx-5">
+      <p className="font-semibold">No scan of "{q}" yet - it is in the app:</p>
+      <ul className="mt-2 space-y-1.5">
+        {res.orders.map((o) => (
+          <li key={o.id}>
+            <span className="font-mono font-semibold">{o.tracking || "(no AWB yet)"}</span> · {o.channel_label} · order {o.channel_order_id}
+            {o.courier ? ` · ${o.courier}` : ""} · <span className="text-ink-2">OMSGuru: {o.status_text || o.status_group}</span>
+            <span className={cx("ml-1 font-semibold", o.status_group === "CANCELLED" || o.status_group === "RETURN" ? "text-muted" : "text-warn-ink")}>
+              - {state(o)}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs text-muted">Scan it in its own marketplace to dispatch it.</p>
+    </div>
+  );
+}
+
 function ScanSheet({
   data,
   colorOf,
   sup,
   onVoid,
   offset,
+  q = "",
 }: {
   data: { total: number; scans: Scan[] } | null;
   colorOf: (id: number) => string;
   sup: boolean;
   onVoid: (s: Scan) => void;
   offset: number;
+  q?: string;
 }) {
   if (!data) return <SkeletonRows />;
+  // A search with no scans is not "not found": the AWB may be in the app and simply not scanned yet (pending).
+  if (data.scans.length === 0 && q.trim().length >= 5) return <AwbLookup q={q.trim()} />;
   if (data.scans.length === 0) return <Empty title="No shipments match these filters" />;
   return (
     <Sheet minW={1080} head={["Order ID", "Tracking ID", "Marketplace", "SKUs", "Qty", "Status", "Operator", "Scan time", ...(sup ? [""] : [])]}>

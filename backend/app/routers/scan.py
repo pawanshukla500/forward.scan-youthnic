@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import logging
+import threading
+import time
+from collections import deque
+
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -19,6 +24,28 @@ from ..services.scanning import _event, find_orders, order_payload, process_scan
 from ..timeutil import today_dispatch_date, utcnow
 
 router = APIRouter(prefix="/api", tags=["scan"])
+log = logging.getLogger("scan")
+
+# One account sends at most this many scans a minute: a packer does 20-40, a fast scan gun ~60. Beyond it is a stuck
+# device or misuse filling the database with junk rows - refused (429) until the minute has passed.
+SCAN_RATE_PER_MIN = 150
+_scan_times: dict[int, deque] = {}
+_scan_rate_lock = threading.Lock()
+
+
+def _scan_rate_ok(user_id: int) -> bool:
+    now = time.monotonic()
+    with _scan_rate_lock:
+        if len(_scan_times) > 2000:  # forget accounts idle for a minute
+            for uid in [u for u, q in _scan_times.items() if not q or now - q[-1] > 60]:
+                _scan_times.pop(uid, None)
+        q = _scan_times.setdefault(user_id, deque())
+        while q and now - q[0] > 60:
+            q.popleft()
+        if len(q) >= SCAN_RATE_PER_MIN:
+            return False
+        q.append(now)
+        return True
 
 
 def pending_counts(db: Session) -> dict[int, int]:
@@ -70,17 +97,41 @@ class ScanIn(BaseModel):
     station: str = Field(default="", max_length=60)
 
 
+def _record_failed_scan(user: User, body: "ScanIn", why: str) -> None:
+    from ..db import session_scope
+    from ..oms.mapping import normalize_tracking as _norm
+
+    try:
+        with session_scope() as db2:
+            _event(db2, user=user, station=body.station or "", channel_id=body.channel_id, raw=body.tracking,
+                   norm=_norm(body.tracking or ""), outcome="ERROR", message=f"Not saved (server error): {why}"[:300])
+    except Exception:  # noqa: BLE001 - the database itself may be the problem
+        log.exception("could not record the failed scan of %r", body.tracking)
+
+
 @router.post("/scan")
 def scan(body: ScanIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if not _scan_rate_ok(user.id):
+        raise HTTPException(429, f"More than {SCAN_RATE_PER_MIN} scans in a minute from this account - wait a moment")
     channel = db.get(Channel, body.channel_id)
     if not channel or not channel.scan_enabled:
         raise HTTPException(400, "This sales channel is not enabled for scanning")
     engine = get_engine()
-    res = process_scan(
-        db, user=user, channel_id=body.channel_id, raw=body.tracking, station=body.station,
-        on_unknown=engine.request_urgent if engine else None,
-        live=engine.live_lookup if engine else None,
-    )
+    try:
+        res = process_scan(
+            db, user=user, channel_id=body.channel_id, raw=body.tracking, station=body.station,
+            on_unknown=engine.request_urgent if engine else None,
+            live=engine.live_lookup if engine else None,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Nothing of this scan was saved. Keep the attempt on record (own transaction) so the packets to scan again
+        # can be listed (Scans -> events "ERROR"), and tell the packer plainly.
+        log.exception("scan of %r failed", body.tracking)
+        db.rollback()
+        _record_failed_scan(user, body, f"{type(exc).__name__}: {exc}")
+        raise HTTPException(500, "Server problem - this scan was NOT saved. Scan the same packet again.") from exc
     cache.invalidate(body.channel_id)  # this channel's counts and queue changed (or its rejected count did)
     db.commit()  # hand the connection back: brief() below uses its own sessions
     if res.get("code") == "NOT_IN_OMS" and engine:

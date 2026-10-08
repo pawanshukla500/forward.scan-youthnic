@@ -63,6 +63,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import shop.youthnic.scan.ForwardScanApp
 import shop.youthnic.scan.R
+import shop.youthnic.scan.data.ApiException
 import shop.youthnic.scan.data.AppRelease
 import shop.youthnic.scan.data.AuthExpiredException
 import shop.youthnic.scan.data.BarcodeRules
@@ -710,6 +711,11 @@ class ScannerActivity : AppCompatActivity() {
                 when (ex) {
                     is NetworkException -> if (ex.isOffline) displayNetworkError(rawAwb) else displayNotConfirmed(rawAwb)
                     is AuthExpiredException -> goToLogin()
+                    // the server failed while saving: nothing was saved - say so plainly, it is safe to scan again
+                    is ApiException -> if (ex.code >= 500) displayNotSaved(rawAwb) else {
+                        setOnline(true)
+                        displayGeneralError(rawAwb, ex.message ?: "Scan rejected")
+                    }
                     else -> {
                         setOnline(true)
                         displayGeneralError(rawAwb, ex?.message ?: "Scan rejected")
@@ -950,6 +956,18 @@ class ScannerActivity : AppCompatActivity() {
         binding.tvResultItemsCount.text = getString(R.string.check_connection_rescan)
         binding.layoutItemsList.removeAllViews()
         setOnline(false)
+    }
+
+    private fun displayNotSaved(awb: String) {
+        showVerdict(
+            Cue.STOP, getString(R.string.verdict_not_saved), getString(R.string.not_saved_message),
+            getString(R.string.action_not_saved), getString(R.string.signal_not_saved), counted = false
+        )
+        binding.tvResultAwb.text = awb
+        binding.tvResultOrderId.text = getString(R.string.not_submitted)
+        binding.tvResultCourier.text = "-"
+        binding.tvResultItemsCount.text = "-"
+        binding.layoutItemsList.removeAllViews()
     }
 
     private fun displayGeneralError(awb: String, errorMsg: String) {
