@@ -159,6 +159,19 @@
                         android:text="@string/vibration_feedback"
                         android:textColor="@color/text_primary"
                         android:textSize="14sp" />
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:background="@color/border" />
+
+                    <com.google.android.material.switchmaterial.SwitchMaterial
+                        android:id="@+id/switchFlash"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:text="@string/screen_flash"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 

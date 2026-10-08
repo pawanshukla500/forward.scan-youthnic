@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One row of the scan-signal legend on the scanner's idle card: tap it to see, hear and feel that signal. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="?attr/selectableItemBackground"
+    android:clickable="true"
+    android:focusable="true"
+    android:gravity="center_vertical"
+    android:minHeight="44dp"
+    android:orientation="horizontal"
+    android:paddingHorizontal="4dp">
+
+    <ImageView
+        android:id="@+id/ivSignalIcon"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:background="@drawable/bg_pill"
+        android:backgroundTint="@color/verdict_ok"
+        android:importantForAccessibility="no"
+        android:padding="4dp"
+        android:src="@drawable/ic_signal_ok" />
+
+    <TextView
+        android:id="@+id/tvSignalName"
+        android:layout_width="88dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:maxLines="1"
+        android:textColor="@color/verdict_ok"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        tools:text="NOT FOUND" />
+
+    <TextView
+        android:id="@+id/tvSignalDesc"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp"
+        tools:text="beep-boop · 2 purple blinks · saved, unverified" />
+</LinearLayout>

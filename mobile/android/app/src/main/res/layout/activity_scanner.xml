@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Continuous scanner: header (channel, connection, today's progress) | always-open camera | last result |
-     action bar (Torch, Manual, Pending, Recent). Ids are shared with PreviewActivity (debug UI preview). -->
+     action bar (Torch, Manual, Pending, Recent). The full-screen result flash is added on top by ScannerActivity.
+     Ids are shared with PreviewActivity (debug UI preview). -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
@@ -170,6 +171,42 @@
             android:layout_gravity="center"
             android:indeterminateTint="@color/viewfinder_reticle"
             android:visibility="gone" />
+
+        <!-- Result stamp: pops up over the camera for a moment after every scan (OK / DUPLICATE / NOT FOUND ...) -->
+        <LinearLayout
+            android:id="@+id/layoutSignalStamp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:background="@drawable/bg_round_card"
+            android:backgroundTint="@color/verdict_ok"
+            android:elevation="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="20dp"
+            android:paddingVertical="10dp"
+            android:visibility="gone"
+            tools:visibility="visible">
+
+            <ImageView
+                android:id="@+id/ivSignalStamp"
+                android:layout_width="34dp"
+                android:layout_height="34dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_signal_ok" />
+
+            <TextView
+                android:id="@+id/tvSignalStamp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:accessibilityLiveRegion="assertive"
+                android:maxLines="1"
+                android:textColor="@color/text_on_primary"
+                android:textSize="26sp"
+                android:textStyle="bold"
+                tools:text="DUPLICATE" />
+        </LinearLayout>
     </FrameLayout>
 
     <!-- Result Area -->
@@ -185,6 +222,72 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:padding="12dp">
+
+            <!-- Results since the scanner was opened: the matching number goes up with every scan -->
+            <HorizontalScrollView
+                android:id="@+id/scrollTally"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:scrollbars="none"
+                android:visibility="gone"
+                tools:visibility="visible">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="8dp"
+                        android:text="@string/tally_label"
+                        android:textColor="@color/text_muted"
+                        android:textSize="10sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvTallyOk"
+                        style="@style/TallyPill"
+                        android:backgroundTint="@color/verdict_ok_bg"
+                        android:textColor="@color/verdict_ok"
+                        tools:text="OK 12" />
+
+                    <TextView
+                        android:id="@+id/tvTallyDuplicate"
+                        style="@style/TallyPill"
+                        android:backgroundTint="@color/verdict_duplicate_bg"
+                        android:textColor="@color/verdict_duplicate"
+                        tools:text="Duplicate 1" />
+
+                    <TextView
+                        android:id="@+id/tvTallyNotFound"
+                        style="@style/TallyPill"
+                        android:backgroundTint="@color/verdict_unverified_bg"
+                        android:textColor="@color/verdict_unverified"
+                        tools:text="Not found 0" />
+
+                    <TextView
+                        android:id="@+id/tvTallyCheck"
+                        style="@style/TallyPill"
+                        android:backgroundTint="@color/verdict_check_bg"
+                        android:textColor="@color/verdict_check"
+                        android:visibility="gone"
+                        tools:text="Check 1"
+                        tools:visibility="visible" />
+
+                    <TextView
+                        android:id="@+id/tvTallyStop"
+                        style="@style/TallyPill"
+                        android:backgroundTint="@color/verdict_stop_bg"
+                        android:textColor="@color/verdict_stop"
+                        android:visibility="gone"
+                        tools:text="Stop 2"
+                        tools:visibility="visible" />
+                </LinearLayout>
+            </HorizontalScrollView>
 
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/cardResult"
@@ -212,14 +315,42 @@
                         android:paddingHorizontal="16dp"
                         android:paddingVertical="10dp">
 
-                        <TextView
-                            android:id="@+id/tvVerdictTitle"
-                            android:layout_width="wrap_content"
+                        <LinearLayout
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:text="@string/verdict_verified"
-                            android:textColor="@color/text_on_primary"
-                            android:textSize="18sp"
-                            android:textStyle="bold" />
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal">
+
+                            <ImageView
+                                android:id="@+id/ivVerdictIcon"
+                                android:layout_width="26dp"
+                                android:layout_height="26dp"
+                                android:layout_marginEnd="8dp"
+                                android:importantForAccessibility="no"
+                                android:src="@drawable/ic_signal_ok" />
+
+                            <TextView
+                                android:id="@+id/tvVerdictTitle"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="@string/verdict_verified"
+                                android:textColor="@color/text_on_primary"
+                                android:textSize="18sp"
+                                android:textStyle="bold" />
+
+                            <!-- "#12 · 10:42:05": tells one OK apart from the next -->
+                            <TextView
+                                android:id="@+id/tvScanSeq"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="8dp"
+                                android:alpha="0.9"
+                                android:fontFamily="monospace"
+                                android:textColor="@color/text_on_primary"
+                                android:textSize="12sp"
+                                tools:text="#12 · 10:42:05" />
+                        </LinearLayout>
 
                         <TextView
                             android:id="@+id/tvVerdictMessage"
@@ -229,6 +360,19 @@
                             android:textColor="@color/text_on_primary"
                             android:textSize="13sp"
                             tools:text="Verified - place in dispatch bag" />
+
+                        <!-- What to do with the packet now -->
+                        <TextView
+                            android:id="@+id/tvVerdictAction"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:textColor="@color/text_on_primary"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            android:visibility="gone"
+                            tools:text="Put it in the bag"
+                            tools:visibility="visible" />
                     </LinearLayout>
 
                     <LinearLayout
@@ -367,9 +511,11 @@
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:gravity="center"
+                    android:gravity="center_horizontal"
                     android:orientation="vertical"
-                    android:padding="20dp">
+                    android:paddingHorizontal="12dp"
+                    android:paddingTop="14dp"
+                    android:paddingBottom="8dp">
 
                     <TextView
                         android:layout_width="wrap_content"
@@ -382,11 +528,43 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
+                        android:layout_marginTop="4dp"
                         android:gravity="center"
                         android:text="@string/ready_to_scan_hint"
                         android:textColor="@color/text_secondary"
                         android:textSize="13sp" />
+
+                    <!-- What each result looks, sounds and feels like; tap a row to try it -->
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:layout_marginBottom="2dp"
+                        android:paddingHorizontal="4dp"
+                        android:text="@string/legend_title"
+                        android:textColor="@color/text_muted"
+                        android:textSize="10sp"
+                        android:textStyle="bold" />
+
+                    <include
+                        android:id="@+id/legendOk"
+                        layout="@layout/item_signal_row" />
+
+                    <include
+                        android:id="@+id/legendDuplicate"
+                        layout="@layout/item_signal_row" />
+
+                    <include
+                        android:id="@+id/legendNotFound"
+                        layout="@layout/item_signal_row" />
+
+                    <include
+                        android:id="@+id/legendCheck"
+                        layout="@layout/item_signal_row" />
+
+                    <include
+                        android:id="@+id/legendStop"
+                        layout="@layout/item_signal_row" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 

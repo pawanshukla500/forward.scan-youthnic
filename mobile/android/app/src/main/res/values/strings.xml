@@ -36,11 +36,11 @@
     <string name="submitting_scan">Verifying shipment…</string>
 
     <!-- Verdicts -->
-    <string name="verdict_verified">VERIFIED / OK</string>
+    <string name="verdict_verified">OK - VERIFIED</string>
     <string name="verdict_check">CHECK SHIPMENT</string>
-    <string name="verdict_stop">STOP / REJECTED</string>
+    <string name="verdict_stop">STOP - NOT SAVED</string>
     <string name="verdict_duplicate">DUPLICATE SCAN</string>
-    <string name="verdict_not_in_oms">NOT IN OMS YET</string>
+    <string name="verdict_not_in_oms">NOT FOUND IN OMS</string>
     <string name="what_to_check">What to check:</string>
 
     <!-- Settings -->
@@ -49,6 +49,7 @@
     <string name="station_name_hint">e.g. Station 1</string>
     <string name="sound_effects">Audio Cues</string>
     <string name="vibration_feedback">Vibration</string>
+    <string name="screen_flash">Screen flash on every scan</string>
     <string name="server_url">Server URL</string>
     <string name="server_url_locked_hint">Locked in production release</string>
     <string name="app_version">App Version</string>
@@ -83,7 +84,7 @@
     <string name="label_courier">COURIER</string>
     <string name="label_items">ITEMS</string>
     <string name="ready_to_scan">READY TO SCAN</string>
-    <string name="ready_to_scan_hint">Point the camera at the 1-D barcode on the shipping label.\nVerification happens instantly.</string>
+    <string name="ready_to_scan_hint">Point the camera at the AWB barcode on the shipping label</string>
 
     <!-- Pending sheet -->
     <string name="pending_sheet_title">Pending to scan</string>
@@ -107,7 +108,7 @@
     <string name="pending_count_format">%1$s pending</string>
     <string name="all_scanned">All scanned</string>
     <string name="connection_offline_short">Offline</string>
-    <string name="verdict_offline">OFFLINE</string>
+    <string name="verdict_offline">NOT SENT - OFFLINE</string>
     <string name="not_submitted">Not submitted</string>
     <string name="check_connection_rescan">Check the connection and scan again</string>
     <string name="pending_footer_format">Showing the %1$d most urgent of %2$s</string>
@@ -158,4 +159,35 @@
     <string name="update_up_to_date">You have the latest version</string>
     <string name="update_available_format">Version %1$s is available</string>
     <string name="update_check_failed">Could not reach the server - try again</string>
+
+    <!-- Scan signals (util/ScanSignals.kt): big label over the camera, action line, legend, session tally -->
+    <string name="signal_ok">OK</string>
+    <string name="signal_duplicate">DUPLICATE</string>
+    <string name="signal_not_found">NOT FOUND</string>
+    <string name="signal_check">CHECK</string>
+    <string name="signal_stop">STOP</string>
+    <string name="signal_not_sent">NOT SENT</string>
+    <string name="action_ok">Put it in the bag</string>
+    <string name="action_duplicate">Already scanned - not counted again. Set this packet aside.</string>
+    <string name="action_not_found">Saved as unverified - it turns OK by itself when OMSGuru syncs</string>
+    <string name="action_check">Saved - check the packet before it goes</string>
+    <string name="action_check_not_rts">Keep the packet and tell a supervisor - the order must be Ready to ship in OMSGuru before pickup</string>
+    <string name="action_check_partial_cancel">Open the packet and take out the cancelled items before it goes</string>
+    <string name="action_check_status_changed">Check the OMS status with a supervisor before the packet goes</string>
+    <string name="action_check_channel_unmapped">Saved and counted - an admin should link this OMSGuru channel in Marketplaces</string>
+    <string name="action_stop">Not saved - put this packet aside</string>
+    <string name="action_offline">Not saved - check the connection and scan it again</string>
+    <string name="scan_seq_format">#%1$d · %2$s</string>
+    <string name="legend_title">SCAN SIGNALS · TAP ONE TO TRY</string>
+    <string name="legend_ok">1 beep · 1 green blink · put it in the bag</string>
+    <string name="legend_duplicate">3 quick beeps · 3 blue blinks · set aside</string>
+    <string name="legend_not_found">beep-boop · 2 purple blinks · saved, unverified</string>
+    <string name="legend_check">2 beeps · 2 amber blinks · look at the packet</string>
+    <string name="legend_stop">buzzer · 3 red blinks · not saved</string>
+    <string name="tally_label">THIS SESSION</string>
+    <string name="tally_ok">OK %1$s</string>
+    <string name="tally_duplicate">Duplicate %1$s</string>
+    <string name="tally_not_found">Not found %1$s</string>
+    <string name="tally_check">Check %1$s</string>
+    <string name="tally_stop">Stop %1$s</string>
 </resources>
