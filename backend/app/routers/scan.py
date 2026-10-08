@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import get_db
-from ..models import Channel, Manifest, OmsOrder, Scan, User
+from ..models import STAFF_ROLES, Channel, Manifest, OmsOrder, Scan, User
 from ..oms.mapping import normalize_tracking
 from ..oms.sync import get_engine
 from ..security import current_user
@@ -133,7 +133,7 @@ def void_scan(scan_id: int, reason: str = "", db: Session = Depends(get_db), use
     if not s:
         raise HTTPException(404, "Scan not found")
     own_recent = s.user_id == user.id and utcnow() - s.scanned_at < timedelta(minutes=10)
-    if user.role not in ("admin", "supervisor") and not own_recent:
+    if user.role not in STAFF_ROLES and not own_recent:
         raise HTTPException(403, "Only a supervisor can remove this scan (scanners can undo their own scans for 10 minutes)")
     m = db.get(Manifest, s.manifest_id) if s.manifest_id else None
     if m and m.status == "CLOSED" and user.role != "admin":
@@ -256,7 +256,7 @@ def flag_scan(scan_id: int, body: FlagIn, db: Session = Depends(get_db), user: U
     s = db.get(Scan, scan_id)
     if not s:
         raise HTTPException(404, "Scan not found")
-    if user.role not in ("admin", "supervisor") and s.user_id != user.id:
+    if user.role not in STAFF_ROLES and s.user_id != user.id:
         raise HTTPException(403, "You can only flag your own scans")
     flags = [f for f in (s.flags or "").split(",") if f and f != "FLAGGED"]
     s.flags = ",".join(flags + ["FLAGGED"])[:200]

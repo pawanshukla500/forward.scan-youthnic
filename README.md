@@ -28,7 +28,7 @@ The legend under the scan box plays each sound when tapped.
 
 Plus: live dashboard per marketplace (scanned / pending / duplicates / wrong-bag / blocked, hourly + 14-day charts,
 per-user counts), date-wise reports with Excel export, pending list (Ready-to-ship in OMS but not scanned, sorted by SLA),
-users with roles (scanner / supervisor / admin).
+users with roles (scanner / supervisor / manager / admin).
 
 ## Two things OMSGuru's API cannot do (and how the app handles them)
 
@@ -151,11 +151,11 @@ All accounts live in the database (`users` table); passwords are stored only as 
 | Role | Can |
 |---|---|
 | **Scan operator** | Scan, see their station, undo their own scan for 10 minutes |
-| **Supervisor** | + dashboards, reports and exports, remove scans, see the team |
-| **Admin** | + create users, change roles, reset passwords, disable accounts, all settings |
+| **Supervisor** / **Manager** | + dashboards, reports and exports, remove scans, see the team; **scanner accounts only**: add scanner IDs, reset a scanner's password, disable / enable a scanner |
+| **Admin** | + every account and role (create, change roles, names, emails, reset, disable), all settings |
 
 - *Admin -> Overview -> Team members -> Create user*: name, optional email, username, role and a password (**Generate**
-  makes a readable one). People sign in with their email or username. Leave *"choose their own password the first time
+  makes a readable one). Managers and supervisors see **Add scanner** instead: the new login is always a Scan operator. People sign in with their email or username. Leave *"choose their own password the first time
   they sign in"* ticked: until they do, nothing else opens.
 - **Reset password** (key icon on the row): sets a new password, signs the person out everywhere and asks them to
   choose their own at the next sign-in. **Edit** changes name / email; the person icon disables or re-enables sign-in.
@@ -172,7 +172,8 @@ First live start: channels and warehouses load from OMSGuru automatically. Then 
 1. *Sales channels* - switch scanning on/off per channel; if the yellow "not mapped" box appears, paste the shown label
    into the right channel's "Also known as".
 2. *Warehouses* - make sure your dispatch warehouse is listed with Sync on.
-3. *Team members* (Admin overview) - create a login per packer (role Scan operator) and for leads (Supervisor).
+3. *Team members* (Admin overview) - create a login per packer (role Scan operator) and for leads (Supervisor or
+   Manager); leads can then add scanner IDs for new packers themselves.
 
 ## Android app (APK)
 
@@ -195,29 +196,67 @@ cannot update installed apps - phones would have to uninstall first.
 
 ## Backups & restore
 
-The live server backs itself up while stations keep scanning (copies are taken through SQLite, never by copying
-files, so they are always consistent):
+The server backs itself up while stations keep scanning, with SQLite (this PC) and PostgreSQL (production):
 
 | Copy | When | Kept | Where |
 |---|---|---|---|
-| **Full backup** (compressed, checked with `quick_check`) | Daily after `BACKUP_FULL_HOUR` (02:00), and at first start | 14 daily + 12 monthly | `backups\omsguru_forward_scan\daily`, `\monthly` |
-| **Recent scans** (scans + audit of the last 2 days, users, channels, manifests) | Every 15 min when something was scanned | 96 copies | `backups\omsguru_forward_scan\recent` |
+| **Full backup** - SQLite: copied through SQLite, `quick_check`, gzip; PostgreSQL: `pg_dump` (custom format), read back with `pg_restore --list` | Daily after `BACKUP_FULL_HOUR` (02:00), and at first start | 14 daily + 12 monthly | `daily\`, `monthly\` |
+| **Recent scans** (scans + audit of the last 2 days, users, channels, manifests; a small SQLite file in both cases) | Every 15 min when something was scanned | 96 copies (24 h) | `recent\` |
+| **Offsite copy** (Google Drive, see below) | Every full backup, recent scans at most hourly; size + md5 read back | 60 days daily, 12 months monthly, 3 days recent | `Forward Scan Backups/<folder>/` in Drive |
 
-*Admin -> Overview* shows "Database & backups" (Protected / Only on this PC / At risk); *Admin -> OMSGuru sync* has the
+Folders: SQLite `backups\<database name>\` next to the database; PostgreSQL `data/backups/pg-<database name>/`
+(`/opt/forward-scan/Forward-Scan/data/...` on the server, kept across deploys).
+
+*Admin -> Overview* shows "Database & backups": **Protected** (all copies fine), **Only on this server / PC** (amber: no
+second copy yet), **At risk** (red: a backup or an upload failed, or is too old). *Admin -> OMSGuru sync* has the
 details and **Back up now**.
 
-**Set `BACKUP_MIRROR_DIR` in `.env`** to a NAS share, USB disk or another PC (`\\NAS\fs-backups`). Until then every
-copy is on the same disk as the database, so a disk failure or a stolen PC still loses everything - drive D: on the
-same laptop is the same physical disk. Also copy `.env` somewhere safe.
+### Offsite copy (Google Drive)
 
-**Restore** (orders re-sync from OMSGuru by themselves; scans come from the backups):
+Without a copy somewhere else, a lost server or disk loses every backup with it. The server uploads to Google Drive
+with [rclone](https://rclone.org) (in the Docker image) using its own sign-in in `data/rclone/rclone.conf` (kept
+across deploys, not in git). It only gets access to the files it creates itself (`drive.file` scope). Set up once:
+
+1. On the server: `docker run --rm --network host --entrypoint rclone forward-scan:latest authorize "drive" "eyJzY29wZSI6ImRyaXZlLmZpbGUifQ"`
+   (prints a link; from a PC, open an SSH tunnel first: `ssh -L 53682:127.0.0.1:53682 root@<server>`).
+2. Open the link in a browser on that PC, sign in with the Google account that should hold the backups, allow.
+3. Paste the printed token into `rclone config create gdrive drive scope=drive.file token='<token>'` run with
+   `RCLONE_CONFIG=/app/data/rclone/rclone.conf` inside the app container (`docker exec -it Forward-Scan ...`).
+4. *Admin -> OMSGuru sync -> Back up now*: the card shows "Uploaded ... min ago" and the overview turns **Protected**.
+
+A different target (S3, Backblaze B2, another Drive folder): any rclone remote in that file plus
+`BACKUP_OFFSITE_REMOTE=<remote>:<path>` (GitHub variable for the server). `BACKUP_MIRROR_DIR` (a NAS / USB path)
+still works as well. Also keep a copy of `.env` / the GitHub secrets somewhere safe.
+
+### Restore
+
+Orders re-sync from OMSGuru by themselves; scans come from the backups.
+
+**PostgreSQL (production server):**
+
+```
+cd /opt/forward-scan/Forward-Scan
+docker stop Forward-Scan
+docker compose -p forward-scan -f docker-compose.production.yml run --rm --no-deps forward-scan python backend/restore_backup.py
+docker compose -p forward-scan -f docker-compose.production.yml run --rm --no-deps forward-scan python backend/restore_backup.py --latest --yes
+docker start Forward-Scan
+```
+
+The first `run` lists the backups. With `--latest --yes` it saves the current database to
+`data/backups/incident-<time>/` (`pg_dump`), restores the newest full backup (`pg_restore --clean` in one transaction)
+and merges the newest recent-scans copy taken after it. A backup from Google Drive: put the `fs-pg-*.dump` (and its
+`.json`) into `data/backups/pg-<database>/daily/`, or pass its path instead of `--latest`.
+
+**SQLite (this PC):**
 
 1. Close the server window.
 2. From the project folder: `.venv\Scripts\python backend\restore_backup.py` lists the backups;
    `.venv\Scripts\python backend\restore_backup.py --latest --yes` restores the newest full backup plus the newest
    recent-scans copy taken after it. The current database files (including `-wal` / `-shm`) are moved to
    `backups\incident-<time>\` first - never put a restored file next to an old `-wal`.
-3. Start the server (`run.bat`). Packets scanned after the recovery point can simply be scanned again.
+3. Start the server (`run.bat`).
+
+Packets scanned after the recovery point can simply be scanned again (duplicates are still blocked).
 
 Scans under a year of `SCAN_RETENTION_DAYS` need `SCAN_RETENTION_FORCE=true` (a typo would otherwise delete years of
 history at the next start). Old scans are deleted 2,000 at a time so stations never wait on the clean-up.

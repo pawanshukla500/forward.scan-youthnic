@@ -132,5 +132,6 @@ def require_role(*roles: str):
     return dep
 
 
-require_supervisor = require_role("admin", "supervisor")
+# admin, manager and supervisor (models.STAFF_ROLES)
+require_supervisor = require_role("admin", "manager", "supervisor")
 require_admin = require_role("admin")

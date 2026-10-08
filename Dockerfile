@@ -20,12 +20,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install curl and ca-certificates for health checks & secure outbound HTTPS
+# curl + ca-certificates: health checks and HTTPS; postgresql-client: pg_dump / pg_restore for the backups;
+# rclone: the offsite copy of the backups (Google Drive, see README "Backups & restore")
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     sqlite3 \
     postgresql-client \
+    rclone \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies

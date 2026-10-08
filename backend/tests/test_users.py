@@ -95,7 +95,8 @@ def test_roles_emails_and_admin_only_actions(admin):
     sup = other()
     assert login(sup, "lead@example.com", "Lead2026one").status_code == 200
     assert sup.get("/api/admin/users").status_code == 200  # supervisors can see the team
-    assert sup.post("/api/admin/users", json={"username": "x.y", "password": "Xy2026xyzz"}).status_code == 403
+    # ...and add scanner IDs (test_managers_and_supervisors_manage_scanners_only), but nothing above that
+    assert sup.post("/api/admin/users", json={"username": "x.y", "password": "Xy2026xyzz", "role": "supervisor"}).status_code == 403
     assert sup.patch(f"/api/admin/users/{lead['id']}", json={"role": "admin"}).status_code == 403
 
     me_id = next(u["id"] for u in admin.get("/api/admin/users").json()["users"] if u["username"] == "admin")
@@ -104,6 +105,42 @@ def test_roles_emails_and_admin_only_actions(admin):
 
     admin.patch(f"/api/admin/users/{lead['id']}", json={"is_active": False})
     assert login(other(), "lead.one", "Lead2026one").status_code == 401  # disabled accounts cannot sign in
+
+
+@pytest.mark.parametrize("role", ["manager", "supervisor"])
+def test_managers_and_supervisors_manage_scanners_only(admin, role):
+    """Managers and supervisors add scanner IDs, reset a scanner's password and disable / enable it - nothing else."""
+    admin.post("/api/admin/users", json={"username": f"{role}.boss", "password": "Boss2026pass", "role": role,
+                                         "must_change_password": False})
+    boss = other()
+    assert login(boss, f"{role}.boss", "Boss2026pass").json()["user"]["role"] == role
+
+    made = boss.post("/api/admin/users", json={"username": f"pack.{role}", "full_name": "Packer", "password": "Pack2026one"})
+    assert made.status_code == 200, made.text
+    packer = made.json()["user"]
+    assert packer["role"] == "scanner" and packer["must_change_password"] is True
+    for other_role in ("admin", "manager", "supervisor"):
+        r = boss.post("/api/admin/users", json={"username": f"x.{role}.{other_role}", "password": "Nope2026xx", "role": other_role})
+        assert r.status_code == 403 and "scanner" in r.json()["detail"]
+
+    # a scanner who forgot the password / left the company
+    assert boss.patch(f"/api/admin/users/{packer['id']}", json={"password": "Reset2026two"}).status_code == 200
+    assert login(other(), f"pack.{role}", "Reset2026two").json()["user"]["must_change_password"] is True
+    assert boss.patch(f"/api/admin/users/{packer['id']}", json={"is_active": False}).json()["user"]["is_active"] is False
+    assert login(other(), f"pack.{role}", "Reset2026two").status_code == 401
+    assert boss.patch(f"/api/admin/users/{packer['id']}", json={"is_active": True}).status_code == 200
+
+    # but not the scanner's role, name or email, and never another staff account or an admin
+    for change in ({"role": "supervisor"}, {"full_name": "Renamed"}, {"email": "p@example.com"}):
+        assert boss.patch(f"/api/admin/users/{packer['id']}", json=change).status_code == 403
+    staff = {u["username"]: u["id"] for u in admin.get("/api/admin/users").json()["users"]}
+    for target in ("admin", f"{role}.boss"):
+        assert boss.patch(f"/api/admin/users/{staff[target]}", json={"password": "Take2026over"}).status_code == 403
+        assert boss.patch(f"/api/admin/users/{staff[target]}", json={"is_active": False}).status_code == 403
+
+    # managers see the same pages as supervisors; settings stay admin-only
+    assert boss.get("/api/admin/backups").status_code == 200
+    assert boss.post("/api/admin/backups/full").status_code == 403
 
 
 def test_repeated_wrong_passwords_are_slowed_down():

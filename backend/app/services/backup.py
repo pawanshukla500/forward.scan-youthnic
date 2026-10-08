@@ -1,13 +1,23 @@
-"""Automatic online backups of the SQLite database, safe while stations are scanning.
+"""Automatic online backups of the database (SQLite or PostgreSQL), safe while stations are scanning.
 
-The copy is taken through SQLite itself (one read transaction = one consistent snapshot, measured 7 s for a year
-of scans with scan latency unaffected), never by copying the .db / -wal / -shm files - a copy of only the .db
-silently misses whatever is still in the -wal.
-
-  full   daily: complete snapshot -> PRAGMA quick_check + row counts -> gzip -> daily/ (and monthly/ for the first
-         of each month), with a .json manifest (counts, sha256). Optional copy to BACKUP_MIRROR_DIR.
+  full   daily: complete snapshot -> checked -> daily/ (and monthly/ for the first of each month), with a .json
+         manifest (counts, sha256).
+           SQLite     copied through SQLite itself (one read transaction = one consistent snapshot), never by
+                      copying the .db / -wal / -shm files - a copy of only the .db silently misses the -wal.
+                      PRAGMA quick_check + row counts, gzip.
+           PostgreSQL pg_dump --format=custom (compressed); pg_restore --list must read it back and find the
+                      main tables, or the dump is kept aside as .FAILED and the Admin page turns red.
   recent every BACKUP_RECENT_MINUTES: what OMSGuru cannot give back - scans and scan_events of the last
-         BACKUP_RECENT_DAYS dispatch days plus users / channels / warehouses / manifests / sync_state (~1 % of a full).
+         BACKUP_RECENT_DAYS dispatch days plus users / channels / warehouses / manifests / sync_state (~1 % of a
+         full), read in ONE snapshot into a small SQLite file in recent/. (PostgreSQL used to run a whole pg_dump
+         here into daily/, which pruned the daily history down to the last few hours.)
+
+Copies elsewhere - without one, a lost server disk loses every backup:
+  BACKUP_MIRROR_DIR      another disk / NAS / USB path the server can write to.
+  offsite (rclone)       BACKUP_OFFSITE_REMOTE, or automatically the "gdrive" remote in data/rclone/rclone.conf:
+                         every full backup, and the newest recent copy at most every BACKUP_OFFSITE_RECENT_MINUTES,
+                         is uploaded to <remote>/<backup folder>/{daily,monthly,recent} and checked (size + md5).
+                         Copies older than BACKUP_OFFSITE_KEEP_DAYS are removed from the cloud.
 
 Restore: backend/restore_backup.py (see README "Backups & restore").
 """
@@ -18,6 +28,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -32,6 +43,13 @@ log = logging.getLogger("backup")
 
 RECENT_FULL_TABLES = ("users", "channels", "warehouses", "manifests", "sync_state")
 RECENT_WINDOW_TABLES = ("scans", "scan_events")  # windowed by dispatch_date
+# A PostgreSQL dump without these is not a usable backup of Forward Scan.
+REQUIRED_PG_TABLES = ("users", "channels", "scans", "scan_events")
+
+# Admin shows these amber ("one copy only"), every other problem red.
+ONLY_LOCAL_PC = "Backups are only on this PC's disk - set BACKUP_MIRROR_DIR to a NAS, USB disk or another PC"
+ONLY_LOCAL_SERVER = ("Backups are only on this server's disk - connect the offsite copy "
+                     "(README: Backups & restore -> Offsite copy)")
 
 
 def is_postgres() -> bool:
@@ -54,6 +72,14 @@ def backup_dir() -> Path:
 
 def _sha256(p: Path) -> str:
     h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _md5(p: Path) -> str:
+    h = hashlib.md5()  # noqa: S324 - only to compare with the cloud's own md5, not for security
     with open(p, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
@@ -105,99 +131,254 @@ def _mirror(files: list[Path], sub: str) -> dict[str, Any] | None:
         return {"dir": settings.backup_mirror_dir, "ok": False, "error": str(exc)[:200]}
 
 
+# ---- offsite copy (rclone: Google Drive, S3, ...) ---------------------------------------------------
+
+
+def offsite_remote() -> str:
+    """Where the offsite copies go, e.g. "gdrive:Forward Scan Backups"; "" = none set up."""
+    if settings.backup_offsite_remote:
+        return settings.backup_offsite_remote
+    try:
+        if "[gdrive]" in Path(settings.backup_rclone_config).read_text(encoding="utf-8"):
+            return "gdrive:Forward Scan Backups"
+    except OSError:
+        pass
+    return ""
+
+
+def _rclone(args: list[str], timeout: int = 900) -> str:
+    env = dict(os.environ, RCLONE_CONFIG=settings.backup_rclone_config)
+    try:
+        r = subprocess.run(["rclone", *args], env=env, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as exc:
+        raise RuntimeError("rclone is not installed on this server") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"rclone {args[0]} took longer than {timeout} s") from exc
+    if r.returncode != 0:
+        raise RuntimeError(f"rclone {args[0]} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+    return r.stdout
+
+
+def _offsite(files: list[Path], sub: str, keep_days: int) -> dict[str, Any] | None:
+    """Upload [backup, manifest] to <remote>/<backup folder>/<sub>, then read the backup's size and md5 back."""
+    remote = offsite_remote()
+    if not remote:
+        return None
+    target = f"{remote.rstrip('/')}/{backup_dir().name}/{sub}"
+    at = datetime.now().isoformat(timespec="seconds")
+    try:
+        for f in files:
+            _rclone(["copyto", "--retries", "3", str(f), f"{target}/{f.name}"])
+        listing = json.loads(_rclone(["lsjson", "--hash", "--files-only", f"{target}/{files[0].name}"], timeout=120) or "[]")
+        entry = listing[0] if listing else {}
+        remote_md5 = (entry.get("Hashes") or {}).get("md5")
+        ok = bool(entry) and entry.get("Size") == files[0].stat().st_size and remote_md5 in (None, _md5(files[0]))
+        res: dict[str, Any] = {"remote": target, "ok": ok, "at": at, "file": files[0].name,
+                               "checked": "size + md5" if remote_md5 else "size"}
+        if not ok:
+            res["error"] = "the copy in the cloud does not match (size / checksum)"
+    except (RuntimeError, ValueError, OSError) as exc:
+        return {"remote": target, "ok": False, "at": at, "error": str(exc)[:300]}
+    try:  # older copies in the cloud; a failure here never fails the backup
+        _rclone(["delete", "--drive-use-trash=false", "--min-age", f"{keep_days}d", target], timeout=300)
+    except RuntimeError as exc:
+        log.warning("Could not remove old offsite copies in %s: %s", target, exc)
+    return res
+
+
 def _prune(folder: Path, pattern: str, keep: int) -> None:
     for old in sorted(folder.glob(pattern))[:-keep] if keep > 0 else []:
         old.unlink(missing_ok=True)
         Path(str(old) + ".json").unlink(missing_ok=True)
 
 
-def _run_full_postgres() -> dict[str, Any]:
-    """Complete, verified, custom-format pg_dump into daily/ (+ monthly/ for the month's first)."""
-    from sqlalchemy import text
+def _land_full(tmp_file: Path, pattern: str, monthly_glob: str, rep: dict[str, Any]) -> Path:
+    """Move a checked full backup into daily/ (+ monthly/), prune, copy to the mirror and offsite."""
+    dest = backup_dir()
+    daily = dest / "daily"
+    daily.mkdir(exist_ok=True)
+    landed = daily / tmp_file.name
+    os.replace(tmp_file, landed)
+    manifest = Path(str(landed) + ".json")
+    _write_json(manifest, rep)
+    monthly = dest / "monthly"
+    monthly.mkdir(exist_ok=True)
+    new_month = not any(monthly.glob(monthly_glob))
+    if new_month:
+        shutil.copyfile(landed, monthly / landed.name)
+        _write_json(monthly / manifest.name, rep)
+    _prune(daily, pattern, settings.backup_keep_daily)
+    _prune(monthly, pattern, settings.backup_keep_monthly)
+    rep["mirror"] = _mirror([landed, manifest], "daily")
+    rep["offsite"] = _offsite([landed, manifest], "daily", settings.backup_offsite_keep_days)
+    if new_month and rep["offsite"] and rep["offsite"].get("ok"):
+        rep["offsite_monthly"] = _offsite([monthly / landed.name, monthly / manifest.name], "monthly",
+                                          max(settings.backup_offsite_keep_days, settings.backup_keep_monthly * 31 + 5))
+    return landed
+
+
+# ---- PostgreSQL ---------------------------------------------------------------------------------------
+
+
+def pg_conn_args(url: str | None = None) -> tuple[list[str], dict[str, str], str]:
+    """-h/-p/-U arguments, environment (PGPASSWORD, PGSSLMODE) and database name for pg_dump / pg_restore."""
     from sqlalchemy.engine import make_url
 
-    from ..db import Base, engine
+    u = make_url(url or settings.database_url)
+    args = ["-h", u.host or "localhost", "-p", str(u.port or 5432), "-U", u.username or "postgres"]
+    env = dict(os.environ)
+    if u.password:
+        env["PGPASSWORD"] = u.password
+    sslmode = u.query.get("sslmode")
+    if sslmode:
+        env["PGSSLMODE"] = sslmode if isinstance(sslmode, str) else sslmode[0]
+    return args, env, u.database or "forward_scan"
 
+
+def pg_run(cmd: list[str], env: dict[str, str], timeout: int = 3600) -> subprocess.CompletedProcess:
+    try:
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{cmd[0]} is not installed (postgresql-client)") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{cmd[0]} took longer than {timeout} s") from exc
+    if r.returncode != 0:
+        raise RuntimeError(f"{cmd[0]} failed (code {r.returncode}): {(r.stderr or r.stdout).strip()[-300:]}")
+    return r
+
+
+def verify_pg_dump(path: Path) -> dict[str, Any]:
+    """pg_restore reads the dump's whole table of contents: a truncated or damaged file fails here."""
+    try:
+        r = subprocess.run(["pg_restore", "--list", str(path)], capture_output=True, text=True, timeout=600)
+    except FileNotFoundError:
+        return {"quick_check": "not checked (pg_restore missing)", "ok": True, "checked": False}
+    if r.returncode != 0:
+        return {"quick_check": f"pg_restore cannot read it: {(r.stderr or '').strip()[-200:]}", "ok": False}
+    missing = [t for t in REQUIRED_PG_TABLES if not re.search(rf"TABLE DATA public {t}(\s|$)", r.stdout, re.M)]
+    if missing:
+        return {"quick_check": f"tables missing from the dump: {', '.join(missing)}", "ok": False}
+    return {"quick_check": "ok", "ok": True, "checked": True}
+
+
+def _pg_engine(url: str):
+    from sqlalchemy import create_engine
+
+    from ..db import engine
+
+    return engine if url == settings.database_url else create_engine(url)
+
+
+def _pg_counts(url: str) -> dict[str, int]:
+    from sqlalchemy import text
+
+    from ..db import Base
+
+    counts: dict[str, int] = {}
+    try:
+        with _pg_engine(url).connect() as conn:
+            for table in Base.metadata.sorted_tables:
+                counts[table.name] = conn.execute(text(f'SELECT count(*) FROM "{table.name}"')).scalar_one()
+    except Exception as exc:  # noqa: BLE001 - counts are informative only
+        log.warning("Could not count rows for the backup manifest: %s", exc)
+    return counts
+
+
+def _run_full_postgres(url: str | None = None) -> dict[str, Any]:
+    """Complete pg_dump (custom format, compressed), read back with pg_restore, into daily/ (+ monthly/)."""
+    url = url or settings.database_url
     dest = backup_dir()
     tmp = dest / "tmp"
     tmp.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now()
-    name = f"fs-pg-{stamp:%Y%m%d-%H%M%S}"
-    raw = tmp / f"{name}.dump"
+    raw = tmp / f"fs-pg-{stamp:%Y%m%d-%H%M%S}.dump"
     raw.unlink(missing_ok=True)
     t0 = time.perf_counter()
 
-    u = make_url(settings.database_url)
-    cmd = [
-        "pg_dump",
-        "--format=custom",
-        "--no-owner",
-        "--no-acl",
-        "-h", u.host or "localhost",
-        "-p", str(u.port or 5432),
-        "-U", u.username or "postgres",
-        "-d", u.database or "forward_scan",
-        "-f", str(raw),
-    ]
-
-    env = dict(os.environ)
-    if u.password:
-        env["PGPASSWORD"] = u.password
-
-    try:
-        subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
-    except FileNotFoundError:
-        raise RuntimeError("pg_dump utility not found in PATH")
-    except subprocess.CalledProcessError as err:
-        msg = err.stderr[:200] if err.stderr else str(err)
-        raise RuntimeError(f"pg_dump failed (code {err.returncode}): {msg}")
-
+    args, env, dbname = pg_conn_args(url)
+    pg_run(["pg_dump", "--format=custom", "--no-owner", "--no-acl", *args, "-d", dbname, "-f", str(raw)], env)
     if not raw.exists() or raw.stat().st_size == 0:
-        raise RuntimeError("pg_dump produced empty or missing file")
+        raise RuntimeError("pg_dump produced an empty or missing file")
 
-    restore_ok = True
-    try:
-        subprocess.run(["pg_restore", "--list", str(raw)], check=True, capture_output=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pass
-
-    counts: dict[str, int] = {}
-    try:
-        with engine.connect() as conn:
-            for table in Base.metadata.sorted_tables:
-                cnt = conn.execute(text(f'SELECT count(*) FROM "{table.name}"')).fetchone()[0]
-                counts[table.name] = cnt
-    except Exception as exc:
-        log.warning("Could not query table counts for pg_dump manifest: %s", exc)
-
+    verify = verify_pg_dump(raw)
+    verify["counts"] = _pg_counts(url)
     rep: dict[str, Any] = {
-        "kind": "full", "backend": "postgresql", "source": u.database,
+        "kind": "full", "backend": "postgresql", "source": dbname,
         "started": stamp.isoformat(timespec="seconds"), "copy_s": round(time.perf_counter() - t0, 2),
-        "verify": {"quick_check": "ok" if restore_ok else "warn", "ok": restore_ok, "counts": counts},
-        "file": raw.name, "bytes": raw.stat().st_size, "sha256": _sha256(raw),
+        "verify": verify, "file": raw.name, "bytes": raw.stat().st_size, "sha256": _sha256(raw),
     }
+    if not verify["ok"]:
+        raw.rename(raw.with_suffix(".dump.FAILED"))
+        rep["ok"] = False
+        _write_json(dest / "last_full.json", rep)
+        raise RuntimeError(f"backup check failed: {verify['quick_check']}")
 
-    daily = dest / "daily"
-    daily.mkdir(exist_ok=True)
-    landed = daily / raw.name
-    os.replace(raw, landed)
-    _write_json(Path(str(landed) + ".json"), rep)
-
-    monthly = dest / "monthly"
-    monthly.mkdir(exist_ok=True)
-    if not any(monthly.glob(f"fs-pg-{stamp:%Y%m}*.dump")):
-        shutil.copyfile(landed, monthly / landed.name)
-        _write_json(monthly / (landed.name + ".json"), rep)
-
-    _prune(daily, "fs-pg-*.dump", settings.backup_keep_daily)
-    _prune(monthly, "fs-pg-*.dump", settings.backup_keep_monthly)
-
-    rep["mirror"] = _mirror([landed, Path(str(landed) + ".json")], "daily")
+    landed = _land_full(raw, "fs-pg-*.dump", f"fs-pg-{stamp:%Y%m}*.dump", rep)
     rep["ok"] = True
     rep["total_s"] = round(time.perf_counter() - t0, 2)
     _write_json(dest / "last_full.json", rep)
     log.info("Full PostgreSQL backup %s (%.1f MB) in %.1fs", landed.name, rep["bytes"] / 1e6, rep["total_s"])
     return rep
+
+
+def _run_recent_postgres(url: str | None = None) -> dict[str, Any]:
+    """Recent scans / events + the small tables, read in one REPEATABLE READ snapshot into a small SQLite file
+    (same format as the SQLite recent copy; restore_backup.py merges it into PostgreSQL)."""
+    from sqlalchemy import create_engine, select
+
+    from .. import models  # noqa: F401 - registers every table on Base.metadata
+    from ..db import Base
+
+    url = url or settings.database_url
+    dest = backup_dir() / "recent"
+    dest.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now()
+    out = dest / f"fs-recent-{stamp:%Y%m%d-%H%M%S}.db"
+    part = out.with_suffix(".partial")
+    part.unlink(missing_ok=True)
+    since_day = date.today() - timedelta(days=settings.backup_recent_days)
+    since = since_day.isoformat()
+    t0 = time.perf_counter()
+    tables = [Base.metadata.tables[n] for n in RECENT_FULL_TABLES + RECENT_WINDOW_TABLES]
+    counts: dict[str, int] = {}
+    dst_engine = create_engine(f"sqlite:///{part.as_posix()}")
+    try:
+        Base.metadata.create_all(dst_engine, tables=tables)
+        with _pg_engine(url).connect() as src_conn, dst_engine.begin() as dst:
+            src = src_conn.execution_options(isolation_level="REPEATABLE READ")
+            with src.begin():  # one snapshot across all tables
+                for t in tables:
+                    q = select(t)
+                    if t.name in RECENT_WINDOW_TABLES:
+                        q = q.where(t.c.dispatch_date >= since_day)
+                    res = src.execute(q.order_by(*t.primary_key.columns))
+                    n = 0
+                    while rows := res.fetchmany(5000):
+                        dst.execute(t.insert(), [dict(r._mapping) for r in rows])
+                        n += len(rows)
+                    counts[t.name] = n
+    finally:
+        dst_engine.dispose()
+    c = sqlite3.connect(part)
+    try:
+        c.execute("CREATE TABLE _recent_meta (k TEXT PRIMARY KEY, v TEXT)")
+        c.executemany("INSERT INTO _recent_meta VALUES (?, ?)",
+                      [("since_dispatch_date", since), ("taken_at", stamp.isoformat(timespec="seconds")),
+                       ("backend", "postgresql")])
+        c.commit()
+    finally:
+        c.close()
+    os.replace(part, out)
+    _, _, dbname = pg_conn_args(url)
+    rep = {"kind": "recent", "backend": "postgresql", "source": dbname, "file": out.name, "since": since,
+           "counts": counts, "bytes": out.stat().st_size, "started": stamp.isoformat(timespec="seconds"),
+           "seconds": round(time.perf_counter() - t0, 2), "quick_check": _check(out)["quick_check"],
+           "sha256": _sha256(out)}
+    rep["ok"] = rep["quick_check"] == "ok"
+    return _finish_recent(out, rep)
+
+
+# ---- SQLite -------------------------------------------------------------------------------------------
 
 
 def _run_full_sqlite() -> dict[str, Any]:
@@ -232,19 +413,7 @@ def _run_full_sqlite() -> dict[str, Any]:
         shutil.copyfileobj(fi, fo, 4 << 20)
     raw.unlink()
     rep.update(file=final.name, bytes=final.stat().st_size, sha256=_sha256(final))
-    daily = dest / "daily"
-    daily.mkdir(exist_ok=True)
-    landed = daily / final.name
-    os.replace(final, landed)
-    _write_json(Path(str(landed) + ".json"), rep)
-    monthly = dest / "monthly"
-    monthly.mkdir(exist_ok=True)
-    if not any(monthly.glob(f"fs-{stamp:%Y%m}*.db.gz")):
-        shutil.copyfile(landed, monthly / landed.name)
-        _write_json(monthly / (landed.name + ".json"), rep)
-    _prune(daily, "fs-*.db.gz", settings.backup_keep_daily)
-    _prune(monthly, "fs-*.db.gz", settings.backup_keep_monthly)
-    rep["mirror"] = _mirror([landed, Path(str(landed) + ".json")], "daily")
+    landed = _land_full(final, "fs-*.db.gz", f"fs-{stamp:%Y%m}*.db.gz", rep)
     rep["ok"] = True
     rep["total_s"] = round(time.perf_counter() - t0, 2)
     _write_json(dest / "last_full.json", rep)
@@ -257,15 +426,6 @@ def run_full() -> dict[str, Any]:
     if is_postgres():
         return _run_full_postgres()
     return _run_full_sqlite()
-
-
-def _run_recent_postgres() -> dict[str, Any]:
-    dest = backup_dir()
-    rep = _run_full_postgres()
-    recent_rep = dict(rep)
-    recent_rep["kind"] = "recent"
-    _write_json(dest / "last_recent.json", recent_rep)
-    return recent_rep
 
 
 def _run_recent_sqlite() -> dict[str, Any]:
@@ -308,9 +468,22 @@ def _run_recent_sqlite() -> dict[str, Any]:
            "started": stamp.isoformat(timespec="seconds"), "seconds": round(time.perf_counter() - t0, 2),
            "quick_check": _check(out)["quick_check"], "sha256": _sha256(out)}
     rep["ok"] = rep["quick_check"] == "ok"
-    _write_json(Path(str(out) + ".json"), rep)
+    return _finish_recent(out, rep)
+
+
+def _finish_recent(out: Path, rep: dict[str, Any]) -> dict[str, Any]:
+    """Manifest, prune, mirror, and an offsite upload at most every BACKUP_OFFSITE_RECENT_MINUTES."""
+    dest = out.parent
+    manifest = Path(str(out) + ".json")
+    _write_json(manifest, rep)
     _prune(dest, "fs-recent-*.db", settings.backup_keep_recent)
-    rep["mirror"] = _mirror([out, Path(str(out) + ".json")], "recent")
+    rep["mirror"] = _mirror([out, manifest], "recent")
+    prev = (_read_json(backup_dir() / "last_recent.json") or {}).get("offsite")
+    prev_age = _age_hours(prev.get("at")) if prev else None
+    if prev and prev.get("ok") and prev_age is not None and prev_age * 60 < settings.backup_offsite_recent_minutes:
+        rep["offsite"] = prev  # uploaded a little while ago: keep the cloud quiet
+    else:
+        rep["offsite"] = _offsite([out, manifest], "recent", 3)
     _write_json(backup_dir() / "last_recent.json", rep)
     return rep
 
@@ -326,6 +499,16 @@ def _age_hours(iso: str | None) -> float | None:
     if not iso:
         return None
     return round((datetime.now() - datetime.fromisoformat(iso)).total_seconds() / 3600, 2)
+
+
+def _pg_size() -> int | None:
+    from sqlalchemy import text
+
+    try:
+        with _pg_engine(settings.database_url).connect() as conn:
+            return int(conn.execute(text("SELECT pg_database_size(current_database())")).scalar_one())
+    except Exception:  # noqa: BLE001 - informative only
+        return None
 
 
 def status() -> dict[str, Any]:
@@ -354,48 +537,52 @@ def status() -> dict[str, Any]:
         problems.append(f"Last copy of recent scans is {recent_age:.1f} hours old")
 
     for kind, last in (("full", full), ("recent", recent)):
+        what = "full backup" if kind == "full" else "copy of recent scans"
         err = _read_json(dest / f"last_{kind}_error.json")
         if err and (not last or err["at"] > last.get("started", "")):
-            problems.append(f"The last {'full backup' if kind == 'full' else 'copy of recent scans'} failed at "
-                            f"{err['at'][11:16]} - see the server log")
+            problems.append(f"The last {what} failed at {err['at'][11:16]} - see the server log")
         m = (last or {}).get("mirror")
         if m and not m.get("ok"):
             problems.append(f"Copy to {m.get('dir')} failed: {m.get('error', 'checksum mismatch')}")
+        o = (last or {}).get("offsite")
+        if o and not o.get("ok"):
+            problems.append(f"Offsite copy of the {what} failed: {o.get('error', 'not checked')}")
 
     mirror = settings.backup_mirror_dir
+    remote = offsite_remote()
+    full_off = (full or {}).get("offsite")
+    if remote and settings.backup_enabled and full and full.get("ok") and not full_off:
+        problems.append("No offsite copy yet - press \"Back up now\" (or wait for tonight's backup) to upload one")
     free = free_gb(dest)
     if free is not None and free < 15.0:
         problems.append(f"Only {free} GB free on the database disk")
 
-    if is_postgres():
-        if not mirror:
-            problems.append("Backups are only on this server's disk - set BACKUP_MIRROR_DIR to an offsite copy")
-        return {
-            "enabled": settings.backup_enabled, "backend": "postgresql", "dir": str(dest),
-            "mirror_dir": settings.backup_mirror_dir or None,
-            "full": full and {k: full.get(k) for k in ("started", "ok", "bytes", "file", "total_s", "mirror")},
-            "full_age_hours": full_age,
-            "recent": recent and {k: recent.get(k) for k in ("started", "ok", "bytes", "file", "seconds", "mirror")},
-            "recent_age_hours": recent_age, "recent_minutes": settings.backup_recent_minutes,
-            "db_bytes": None, "wal_bytes": 0,
-            "disk_free_gb": free, "running": sorted(_running), "problems": problems,
-        }
+    pg = is_postgres()
+    if pg:
+        db_bytes, wal_bytes = _pg_size(), 0
+        if not mirror and not remote:
+            problems.append(ONLY_LOCAL_SERVER)
+    else:
+        db = db_path()
+        wal = Path(str(db) + "-wal")
+        db_bytes = db.stat().st_size if db.exists() else None
+        wal_bytes = wal.stat().st_size if wal.exists() else 0
+        same_disk = not mirror or Path(mirror).drive.lower() == db.drive.lower()
+        if same_disk and not remote:
+            problems.append(ONLY_LOCAL_PC)
 
-    # SQLite
-    db = db_path()
-    wal = Path(str(db) + "-wal")
-    same_disk = not mirror or Path(mirror).drive.lower() == db.drive.lower()
-    if same_disk:
-        problems.append("Backups are only on this PC's disk - set BACKUP_MIRROR_DIR to a NAS, USB disk or another PC")
-
+    keys_full = ("started", "ok", "bytes", "file", "total_s", "mirror", "offsite")
+    keys_recent = ("started", "ok", "bytes", "file", "seconds", "mirror", "offsite")
     return {
-        "enabled": settings.backup_enabled, "backend": "sqlite", "dir": str(dest),
-        "mirror_dir": settings.backup_mirror_dir or None,
-        "full": full and {k: full.get(k) for k in ("started", "ok", "bytes", "file", "total_s", "mirror")},
+        "enabled": settings.backup_enabled, "backend": "postgresql" if pg else "sqlite", "dir": str(dest),
+        "mirror_dir": mirror or None,
+        "offsite": {"remote": remote or None, "full": full_off, "recent": (recent or {}).get("offsite"),
+                    "keep_days": settings.backup_offsite_keep_days},
+        "full": full and {k: full.get(k) for k in keys_full},
         "full_age_hours": full_age,
-        "recent": recent and {k: recent.get(k) for k in ("started", "ok", "bytes", "file", "seconds", "mirror")},
+        "recent": recent and {k: recent.get(k) for k in keys_recent},
         "recent_age_hours": recent_age, "recent_minutes": settings.backup_recent_minutes,
-        "db_bytes": db.stat().st_size if db.exists() else None, "wal_bytes": wal.stat().st_size if wal.exists() else 0,
+        "db_bytes": db_bytes, "wal_bytes": wal_bytes,
         "disk_free_gb": free, "running": sorted(_running), "problems": problems,
     }
 

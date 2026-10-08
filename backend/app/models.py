@@ -19,7 +19,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 from .timeutil import utcnow
 
-ROLES = ("admin", "supervisor", "scanner")
+ROLES = ("admin", "manager", "supervisor", "scanner")
+# Reports, exports, removing scans - and scanner accounts: create, reset password, disable (admin-only otherwise).
+STAFF_ROLES = ("admin", "manager", "supervisor")
 
 
 class User(Base):
