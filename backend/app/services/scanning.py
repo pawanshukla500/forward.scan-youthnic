@@ -340,10 +340,6 @@ def process_scan(
             message=f"Invalid barcode '{raw[:40]}' - too short for a tracking ID",
         )
 
-    if awb_shapes.has_symbols(raw):  # the 2-D route code / a bad read: never an AWB, no lookup needed
-        return _invalid(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm,
-                        message=awb_shapes.wrong_barcode(db, channel_id, raw, norm, channel.name), code="WRONG_BARCODE")
-
     orders = find_orders(db, norm)
     key = _dedupe_key(norm, orders)
     # Duplicates are answered from the database alone - no API credit spent on them.
@@ -351,9 +347,9 @@ def process_scan(
     if existing:
         return _duplicate_response(db, existing, user, station, channel_id, raw)
 
-    # Not in the local copy and not shaped like this channel's AWBs: another barcode on the label / packet.
-    # Rejected before the live lookup, so wrong barcodes spend no OMSGuru credits and never become "Not found".
-    if not orders:
+    # The 2-D route code (| / \\ ...) is never an AWB, order id or invoice of an unsynced order: answered without
+    # asking OMSGuru. (Known invoice numbers with "/" were already found locally above.)
+    if not orders and awb_shapes.has_symbols(raw):
         why = awb_shapes.wrong_barcode(db, channel_id, raw, norm, channel.name)
         if why:
             return _invalid(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm,
@@ -380,6 +376,15 @@ def process_scan(
                 if existing:
                     linked = _linked_response(db, existing, user, station, channel_id, raw)
                     return linked or _duplicate_response(db, existing, user, station, channel_id, raw)
+
+    # Still unknown after asking OMSGuru (which finds new AWBs, new courier formats and order / sub-order ids of
+    # orders not synced yet) and not shaped like this channel's AWBs: another barcode on the label or packet -
+    # rejected instead of being saved as "Not found".
+    if not orders:
+        why = awb_shapes.wrong_barcode(db, channel_id, raw, norm, channel.name)
+        if why:
+            return _invalid(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm,
+                            message=why, code="WRONG_BARCODE")
 
     awbs = sorted({o.tracking_norm for o in orders if o.tracking_norm})
     if len(awbs) > 1 and norm not in awbs:

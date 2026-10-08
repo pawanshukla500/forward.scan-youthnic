@@ -1026,10 +1026,11 @@ def prune_orders() -> int:
         )
 
         # Pending until scanned (user, 8 Oct 2026): an unscanned AWB that is not cancelled / returned stays - even
-        # when OMS shows it shipped - for as long as it is counted (AWB on or after the admin's "count orders from"
-        # date). Only a scan, a cancellation or moving that date forward lets it go.
+        # when OMS shows it shipped - while it is counted (AWB on or after the admin's "count orders from" date) and
+        # at most PENDING_KEEP_DAYS. Only a scan, a cancellation, moving that date forward or that cap lets it go.
         awb_at = func.coalesce(OmsOrder.awb_generated_at, OmsOrder.first_seen_at)
-        still_pending = (OmsOrder.tracking_norm != "") & OmsOrder.status_group.notin_(("CANCELLED", "RETURN"))
+        still_pending = ((OmsOrder.tracking_norm != "") & OmsOrder.status_group.notin_(("CANCELLED", "RETURN"))
+                         & (awb_at >= now - timedelta(days=settings.pending_keep_days)))
         counted_from = tracking.start_utc()
         if counted_from is not None:
             still_pending = still_pending & (awb_at >= counted_from)

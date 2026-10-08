@@ -100,6 +100,9 @@ class Settings:
     # Days of unscanned order data kept, by AWB generation date (channel-wise reconciliation, duplicate / cancel checks).
     # Orders still Packed / Ready-to-ship are always kept - they are pending.
     retain_orders_days: int = min(45, max(1, _int("RETAIN_ORDERS_DAYS", 7)))
+    # An unscanned (not cancelled) AWB stays pending until it is scanned - but at most this many days, so a label
+    # that can never be scanned (replaced AWB, lost packet) does not sit in Overdue forever.
+    pending_keep_days: int = min(365, max(7, _int("PENDING_KEEP_DAYS", 45)))
     # Scanned orders (orders linked to scans) are kept in PostgreSQL for long-term history (default 550 days = 1.5 years).
     scanned_orders_retention_requested: int = max(0, _int("SCANNED_ORDERS_RETENTION_DAYS", 550))
     scanned_orders_retention_days: int = field(default_factory=lambda: _scanned_orders_retention_days())

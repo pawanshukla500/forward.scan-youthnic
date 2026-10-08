@@ -31,7 +31,7 @@ _RANK = {"OPEN": 0, "NOT_PACKED": 1, "PARTIAL_CANCEL": 2, "UNKNOWN": 3, "MOVED":
 
 
 # Statuses that are NOT pending (see AwbRec.bucket); used to push the "pending" filter into SQL.
-_NOT_PENDING = ("CANCELLED", "RETURN")
+_NOT_PENDING = NOT_PENDING = ("CANCELLED", "RETURN")
 # Pending AWBs that OMS already shows as gone (counted as "left_unscanned" for information, still pending).
 SHIPPED_IN_OMS = ("SHIPPED", "MOVED")
 

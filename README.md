@@ -66,15 +66,17 @@ date (last 7 days):
 | *Of pending: shipped in OMS* | Information inside Pending: OMS already shows it shipped / in transit, but nobody scanned it here |
 | **Cancelled after AWB** | Cancelled or returned after the label was made - excluded from pending, blocked if scanned |
 
-Unscanned AWBs are never aged out of the database while they count (AWB on or after *Count orders from*); scanning
-one that OMS already moved on is a normal **OK** scan and takes it out of Pending.
+Unscanned AWBs are not aged out of the database while they count (AWB on or after *Count orders from*), for at most
+`PENDING_KEEP_DAYS` (45) so a label that can never be scanned does not stay overdue forever; scanning one that OMS
+already moved on is a normal **OK** scan and takes it out of Pending.
 
 **Wrong barcodes.** A label carries several barcodes (Myntra packet id `MPP3EM...`, the 2-D route code
 `5|\MB-...|O|NAG/WRA|...`, product EAN codes on the polybag, courier bag ids). A code OMSGuru does not know AND that
 does not look like any AWB of the selected sales channel (formats learned from the synced orders, e.g. Flipkart
 `FMPC + 10 digits`) is rejected as **WRONG BARCODE - scan the AWB** (red, not saved, no OMSGuru credit spent) instead
 of being saved as "Not found". Real-looking AWBs that OMSGuru does not have yet are still saved as **Not found** and
-turn OK by themselves when the order syncs. Old wrong-barcode "Not found" scans:
+turn OK by themselves when the order syncs. The check runs after the live OMSGuru lookup, so order-id barcodes and
+new courier formats are still found; a code shaped like another channel's AWB is answered "WRONG MARKETPLACE?". Old wrong-barcode "Not found" scans:
 `python backend/cleanup_wrong_barcodes.py` lists them, `--yes` removes them (kept in the audit trail as VOIDED).
 
 Every bucket opens the AWB list (with SLA, age, courier, SKUs) and exports to Excel. The scan station shows the

@@ -163,3 +163,59 @@ def test_cleanup_removes_old_wrong_barcode_scans_and_keeps_real_ones(env, monkey
     with SessionLocal() as db:
         ev = db.scalar(select(ScanEvent).where(ScanEvent.tracking_norm == "MPP3EM000000001", ScanEvent.outcome == "VOIDED"))
         assert ev is not None and "wrong barcode" in ev.message
+
+
+def test_code39_star_wrapper_is_not_a_symbol(env):
+    assert not awb_shapes.has_symbols("*TSTX4300000011*")
+    c, eng = env
+    res = _scan(c, eng, "*TSTX4300000011*")  # some scanners pass the Code 39 start / stop stars on
+    assert res["severity"] == "success", res
+
+
+def test_another_marketplaces_awb_format_is_named(env):
+    c, eng = env
+    other = 2  # Meesho: teach it VL + 13 digits
+    eng._apply_rows([_row(f"VL{8800000000000 + i}", f"ODVL{i}", ch=other) for i in range(110)], "invoices")
+    awb_shapes.reset()
+    try:
+        res = _scan(c, eng, "VL0012345678901")
+        assert res["code"] == "WRONG_BARCODE" and "WRONG MARKETPLACE" in res["message"]
+        assert MOCK_CHANNELS[other]["name"] in res["message"]
+    finally:
+        with session_scope() as db:
+            db.execute(delete(OmsOrder).where(OmsOrder.tracking_norm.like("VL88%")))
+        awb_shapes.reset()
+
+
+def test_cleanup_leaves_scans_in_closed_manifests(env):
+    import cleanup_wrong_barcodes as cleanup
+    from app.models import Manifest, User
+    from app.timeutil import today_dispatch_date
+
+    with session_scope() as db:
+        admin = db.scalar(select(User).where(User.username == "admin"))
+        m = Manifest(dispatch_date=today_dispatch_date(), channel_id=CH_ID, seq=99, status="CLOSED")
+        db.add(m)
+        db.flush()
+        db.add(Scan(tracking_norm="MPP3EM000000077", tracking_raw="MPP3EM000000077", dispatch_date=today_dispatch_date(),
+                    user_id=admin.id, channel_id=CH_ID, result="UNVERIFIED", flags="NOT_IN_OMS", manifest_id=m.id))
+    closed: list = []
+    with session_scope() as db:
+        found = {s.tracking_norm for s, _ in cleanup.candidates(db, days=1, closed=closed)}
+        assert "MPP3EM000000077" not in found and "MPP3EM000000077" in {s.tracking_norm for s in closed}
+
+
+def test_unscanned_awbs_are_kept_at_most_pending_keep_days(env):
+    c, eng = env
+    from datetime import timedelta
+
+    from app.config import settings
+    from app.timeutil import utcnow
+
+    eng._apply_rows([_row("TSTX6000000001", "ODOLD1", "Shipped")], "invoices")
+    with session_scope() as db:
+        o = db.scalar(select(OmsOrder).where(OmsOrder.tracking_norm == "TSTX6000000001"))
+        o.awb_generated_at = utcnow() - timedelta(days=settings.pending_keep_days + 1)
+    sm.prune_orders()
+    with session_scope() as db:
+        assert db.scalar(select(OmsOrder).where(OmsOrder.tracking_norm == "TSTX6000000001")) is None
