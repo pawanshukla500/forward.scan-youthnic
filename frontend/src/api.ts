@@ -1,3 +1,4 @@
+import { Capacitor } from "@capacitor/core";
 export type Role = "admin" | "manager" | "supervisor" | "scanner";
 
 export interface User {
@@ -131,7 +132,8 @@ export interface QueueRow {
 export interface ScanContext {
   date: string;
   channel: Channel;
-  stats: { scanned: number; ok: number; flagged: number; flagged_manual: number; alerts: number; rejected: number; yesterday: number };
+  /** scanned = successful scans only; not_found = flagged "Not found" scans, not counted */
+  stats: { scanned: number; ok: number; flagged: number; flagged_manual: number; alerts: number; rejected: number; yesterday: number; not_found?: number };
   awb: AwbCounts;
   queue: QueueRow[];
   queue_total: number;
@@ -170,9 +172,13 @@ export function setUnauthorizedHandler(fn: () => void) {
    bundled dist, origin http://localhost) cannot rely on cookies, so it stores the login token
    and sends it on every call; the server accepts it the same way (see security.current_user). */
 const TOKEN_KEY = "fs_token";
+/** Browsers sign in with the httpOnly cookie only: a token in page storage could be read by any injected script
+    (and went into server logs as /ws?token=...). Only the installed Capacitor app keeps one. */
+const NATIVE = Capacitor.isNativePlatform();
 let authToken: string | null = null;
 try {
-  authToken = localStorage.getItem(TOKEN_KEY);
+  if (NATIVE) authToken = localStorage.getItem(TOKEN_KEY);
+  else localStorage.removeItem(TOKEN_KEY); // left over from older versions
 } catch {
   /* storage may be blocked */
 }
@@ -180,6 +186,7 @@ export function getAuthToken(): string | null {
   return authToken;
 }
 export function setAuthToken(token: string | null, persist = true) {
+  if (!NATIVE) token = null; // browsers: the cookie only
   authToken = token;
   try {
     if (token && persist) localStorage.setItem(TOKEN_KEY, token);

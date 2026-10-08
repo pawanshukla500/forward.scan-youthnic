@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from sqlalchemy import String, func, literal, or_, select
+from sqlalchemy import String, and_, case, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,28 @@ log = logging.getLogger("scan")
 #   success : green, short beep        (accepted)
 #   warning : amber, double beep       (accepted but needs a look)
 #   error   : red, long buzz           (rejected, not counted)
+
+
+# What counts as a scan (user, 9 Oct 2026: "count the successful scans only"): verified against OMSGuru - OK, or
+# WARN (saved, check the packet). A "Not found" (UNVERIFIED) scan is flagged and counted on its own until the order
+# syncs and it turns OK by itself; the one-time "shipped in OMSGuru" marks keep AWBs out of Pending but are not scans
+# by the team.
+COUNTED_RESULTS = ("OK", "WARN")
+
+
+def is_mark():
+    """SQL: the scan row is a one-time "shipped in OMSGuru" mark, not a scan."""
+    return func.coalesce(Scan.flags, "").like(f"%{MARKED_SHIPPED_FLAG}%")
+
+
+def counted():
+    """SQL: the scan counts as scanned (successful, by the team)."""
+    return and_(Scan.result.in_(COUNTED_RESULTS), ~is_mark())
+
+
+def kind_of():
+    """SQL: 'scanned' | 'not_found' | 'marked' per scan row, for GROUP BY."""
+    return case((is_mark(), "marked"), (Scan.result == "UNVERIFIED", "not_found"), else_="scanned")
 
 
 @dataclass
@@ -93,7 +115,7 @@ def find_orders(db: Session, norm: str) -> list[OmsOrder]:
                 or_(
                     func.upper(OmsOrder.channel_order_id) == norm,
                     func.upper(OmsOrder.invoice_id) == norm,
-                    sub_list.like(f"%,{norm},%"),  # exact sub-order id inside the comma list
+                    sub_list.contains(f",{norm},", autoescape=True),  # exact sub-order id inside the comma list
                 )
             )
             .limit(20)
@@ -118,6 +140,19 @@ def pick_shipment(rows: list[OmsOrder]) -> list[OmsOrder]:
     return dispatchable[0] if len(dispatchable) == 1 else rows
 
 
+class _borrowed:
+    """`with` for a session that belongs to someone else: nothing is closed on exit."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def __enter__(self) -> Session:
+        return self.session
+
+    def __exit__(self, *exc) -> None:
+        return None
+
+
 def order_payload(o: OmsOrder | None) -> dict[str, Any] | None:
     if not o:
         return None
@@ -128,9 +163,12 @@ def order_payload(o: OmsOrder | None) -> dict[str, Any] | None:
 
     missing_skus = [normalize_sku_key(i.get("sku")) for i in items if isinstance(i, dict) and not i.get("image_url") and i.get("sku")]
     if missing_skus:
+        from sqlalchemy.orm import object_session
+
         from ..db import SessionLocal
         try:
-            with SessionLocal() as db:
+            own = object_session(o)  # the caller's session: a second pool connection per scan ran the pool dry
+            with (SessionLocal() if own is None else _borrowed(own)) as db:
                 p_rows = db.scalars(select(SkuPhoto).where(SkuPhoto.sku.in_(missing_skus))).all()
                 p_map = {p.sku: (p.image_url, p.title) for p in p_rows}
                 for it in items:
@@ -234,6 +272,8 @@ def _open_manifest(db: Session, day, channel_id: int) -> Manifest:
         select(Manifest)
         .where(Manifest.dispatch_date == day, Manifest.channel_id == channel_id, Manifest.status == "OPEN")
         .order_by(Manifest.seq.desc())
+        .limit(1)
+        .with_for_update(read=True)  # shared: scans don't wait for each other, a close waits for them
     )
     if m:
         return m
@@ -434,17 +474,20 @@ def process_scan(
         return {"severity": "error", "code": verdict.flags[0] if verdict.flags else verdict.outcome,
                 "message": verdict.message, "order": order_payload(primary), "live": live_info.get("live"), "live_ms": live_info.get("ms")}
 
-    if marked is not None:  # accepted: the real scan takes the place of the "shipped in OMSGuru" mark
-        mark = db.get(Scan, marked.id)  # re-read: another station may have replaced it meanwhile
+    marked_id = marked.id if marked is not None else None
+    now = utcnow()
+    day = dispatch_date_for(now)
+    # The batch first: a race opening the day's batch rolls back, which must not undo the mark's removal below.
+    manifest = _open_manifest(db, day, channel_id)
+    if marked_id is not None:  # accepted: the real scan takes the place of the "shipped in OMSGuru" mark
+        # re-read from the database (not the session's copy) and lock it: another station may replace it meanwhile
+        mark = db.get(Scan, marked_id, populate_existing=True, with_for_update=True)
         if mark is not None and _is_marked(mark):
             _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=mark.tracking_norm,
                    outcome="MARK_REPLACED", scan_id=mark.id,
                    message=f"Real scan replaces the 'shipped in OMSGuru' mark dated {mark.dispatch_date:%d-%b-%Y}")
             db.delete(mark)
             db.flush()
-    now = utcnow()
-    day = dispatch_date_for(now)
-    manifest = _open_manifest(db, day, channel_id)
     scan = Scan(
         tracking_norm=key, tracking_raw=(primary.tracking_raw if primary and primary.tracking_raw else raw)[:160],
         dispatch_date=day, scanned_at=now, user_id=user.id, station=station[:60], channel_id=channel_id,
@@ -542,6 +585,8 @@ def reverify_scans(db: Session, tracking_norms: set[str]) -> list[dict[str, Any]
     norms = list(tracking_norms)
     for i in range(0, len(norms), 500):
         for scan in db.scalars(select(Scan).where(Scan.tracking_norm.in_(norms[i:i + 500]))).unique():
+            if _is_marked(scan):
+                continue  # a one-time "shipped in OMSGuru" mark is not a packer's scan: the real scan replaces it
             orders = list(db.scalars(select(OmsOrder).where(OmsOrder.tracking_norm == scan.tracking_norm)).unique())
             if not orders:
                 continue
@@ -556,9 +601,13 @@ def reverify_scans(db: Session, tracking_norms: set[str]) -> list[dict[str, Any]
             if verdict.result != "BLOCK":
                 if scan.result == "UNVERIFIED":
                     scan.resolved_at = utcnow()
-                scan.result = verdict.result
-                scan.flags = ",".join(verdict.flags)
-                scan.message = verdict.message[:300]
+                manual = "FLAGGED" in (scan.flags or "").split(",")
+                scan.flags = ",".join(verdict.flags + (["FLAGGED"] if manual else []))[:200]
+                if manual:
+                    scan.result = "WARN"  # a packer flagged it ("missing item"...): keep it flagged with their note
+                else:
+                    scan.result = verdict.result
+                    scan.message = verdict.message[:300]
             if (scan.result, scan.alert, orders[0].id) != before:
                 changed.append(scan_payload(scan))
     if changed:

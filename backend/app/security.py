@@ -25,6 +25,12 @@ def _secret() -> str:
     return settings.secret_key
 
 
+def weak_secret() -> bool:
+    """APP_SECRET_KEY signs every sign-in token: the .env.example one, or a short one, can be guessed."""
+    k = settings.secret_key or ""
+    return len(k) < 32 or k.lower().startswith("change")
+
+
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("ascii")
 

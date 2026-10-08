@@ -574,6 +574,22 @@ class SyncEngine:
         return names
 
     def _apply_rows(self, rows: list[dict], source: str, keep_awbs: set[str] | None = None) -> tuple[int, set[str]]:
+        """_apply_rows_once, once more if another writer inserted the same new order / SKU photo at the same moment
+        (a scan's live lookup and the background sync, or two packets of one new SKU): the retry updates their row
+        instead of failing the whole page (a scan would otherwise show "OMSGuru did not answer")."""
+        from sqlalchemy.exc import IntegrityError, OperationalError
+
+        try:
+            return self._apply_rows_once(rows, source, keep_awbs)
+        except IntegrityError:
+            log.info("apply %s: another writer stored the same rows first - applying again", source)
+        except OperationalError as exc:  # PostgreSQL deadlock between two batches touching the same orders
+            if "deadlock" not in str(exc).lower():
+                raise
+            log.info("apply %s: deadlock with another batch - applying again", source)
+        return self._apply_rows_once(rows, source, keep_awbs)
+
+    def _apply_rows_once(self, rows: list[dict], source: str, keep_awbs: set[str] | None = None) -> tuple[int, set[str]]:
         """Upsert API rows into the working set. Returns (rows stored or updated, AWBs touched).
 
         Stored as new rows: Packed / Ready-to-ship orders; any invoice that carries an AWB generated in the

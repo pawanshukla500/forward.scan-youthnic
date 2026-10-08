@@ -56,6 +56,8 @@ interface Dash {
   metrics?: {
     success_rate: number | null;
     flagged: number;
+    /** "Not found" scans: flagged, not counted in scanned until OMSGuru has the order */
+    not_found?: number;
     rejected: number;
     avg_scan_seconds: number | null;
     same_day_last_week: number;
@@ -183,9 +185,9 @@ export default function Dashboard() {
             ? [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-[118px] w-full" />)
             : (
               [
-                ["Total scans", n(t?.scanned), m?.change_vs_last_week == null ? "—" : `${m.change_vs_last_week > 0 ? "+" : ""}${m.change_vs_last_week}%`, "scan", false, true],
+                ["Successful scans", n(t?.scanned), m?.change_vs_last_week == null ? "—" : `${m.change_vs_last_week > 0 ? "+" : ""}${m.change_vs_last_week}%`, "scan", false, true],
                 ["Success rate", m?.success_rate == null ? "-" : `${m.success_rate}%`, `${n(t?.ok)} verified`, "check", false, false],
-                ["Flagged orders", n(m?.flagged), `${n(m?.rejected)} stopped`, "alert", true, false],
+                ["Flagged orders", n(m?.flagged), `${m?.not_found ? `${n(m.not_found)} not found (not counted) · ` : ""}${n(m?.rejected)} stopped`, "alert", true, false],
                 ["Avg. scan time", m?.avg_scan_seconds == null ? "-" : `${m.avg_scan_seconds < 10 ? m.avg_scan_seconds.toFixed(1) : Math.round(m.avg_scan_seconds)} sec`, "per operator", "box", false, false],
               ] as const
             ).map(([label, value, delta, icon, flagged, week]) => (
@@ -401,10 +403,10 @@ export default function Dashboard() {
                 <thead>
                   <tr className="border-b border-line text-left text-xs font-semibold uppercase tracking-wider text-muted">
                     <th scope="col" className="px-4 py-2.5 sm:px-5">Sales channel</th>
-                    <th scope="col" className="px-3 py-2.5 text-right">Scanned</th>
+                    <th scope="col" className="px-3 py-2.5 text-right" title="Successful scans only (verified + check). Not found scans are not counted until OMSGuru has the order.">Scanned</th>
                     <th scope="col" className="px-3 py-2.5 text-right">Verified</th>
                     <th scope="col" className="px-3 py-2.5 text-right">Check</th>
-                    <th scope="col" className="px-3 py-2.5 text-right">Unverified</th>
+                    <th scope="col" className="px-3 py-2.5 text-right" title="Saved as not found - flagged, NOT counted as scanned; turns into a counted scan by itself when the order syncs">Not found</th>
                     <th scope="col" className="px-3 py-2.5 text-right">Duplicate</th>
                     <th scope="col" className="px-3 py-2.5 text-right">Wrong bag</th>
                     <th scope="col" className="px-4 py-2.5 text-right sm:px-5">Blocked</th>
@@ -422,7 +424,7 @@ export default function Dashboard() {
                       <td className="px-3 text-right font-semibold">{n(c.scanned)}</td>
                       <td className="px-3 text-right text-good-ink">{n(c.ok)}</td>
                       <td className={cx("px-3 text-right", c.warn ? "text-warn-ink" : "text-muted")}>{n(c.warn)}</td>
-                      <td className={cx("px-3 text-right", c.unverified ? "text-warn-ink" : "text-muted")}>{n(c.unverified)}</td>
+                      <td className={cx("px-3 text-right", c.unverified ? "font-semibold text-nf-ink" : "text-muted")}>{n(c.unverified)}</td>
                       <td className={cx("px-3 text-right", c.duplicate ? "text-ink" : "text-muted")}>{n(c.duplicate)}</td>
                       <td className={cx("px-3 text-right", c.wrong_channel ? "text-ink" : "text-muted")}>{n(c.wrong_channel)}</td>
                       <td className={cx("px-4 text-right sm:px-5", c.blocked ? "text-crit-ink" : "text-muted")}>{n(c.blocked)}</td>

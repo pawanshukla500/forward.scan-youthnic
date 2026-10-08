@@ -99,4 +99,22 @@ class BarcodeRulesTest {
         // Different barcode after cooldown (2500ms): allowed
         assertTrue(guard.shouldProcess(awb2, t0 + 2500))
     }
+
+    @Test
+    fun testFailedSendCanBeRescannedAtOnce() {
+        val guard = DuplicateGuard(sameCodeSuppressMs = 8000L, anyCodeCooldownMs = 2200L)
+        val awb = "FMPC1234567890"
+        val t0 = 100000L
+        assertTrue(guard.shouldProcess(awb, t0))
+        guard.markEmitted(awb, t0)
+        // the label stays in view: suppressed (each frame restarts the 8 s window)
+        assertFalse(guard.shouldProcess(awb, t0 + 2500))
+        // the send failed (no connection / no answer): the next frame after the cooldown sends it again
+        guard.forget(awb)
+        assertTrue(guard.shouldProcess(awb, t0 + 2600))
+        // forgetting another code changes nothing
+        guard.markEmitted(awb, t0 + 2600)
+        guard.forget("OTHER123456")
+        assertFalse(guard.shouldProcess(awb, t0 + 5000))
+    }
 }

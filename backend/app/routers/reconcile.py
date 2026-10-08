@@ -11,7 +11,7 @@ from ..db import get_db
 from ..models import Channel, Scan, ScanEvent, User
 from ..oms.sync import _get_state
 from ..security import current_user
-from ..services import reconcile
+from ..services import reconcile, scanning
 from ..services.exports import BUCKET_LABELS, channel_summary_xlsx, reconcile_xlsx
 from ..timeutil import today_dispatch_date
 from .reports import XLSX, _file, _parse_day
@@ -67,14 +67,19 @@ def _channel_summary(db: Session, df: date, dt: date, group: str):
         raise HTTPException(400, "group must be day or month")
     key = (lambda d: d.strftime("%Y-%m")) if group == "month" else (lambda d: d.isoformat())
     cells: dict[tuple[str, int], dict[str, int]] = {}
-    for d, cid, result, n in db.execute(
-        select(Scan.dispatch_date, Scan.channel_id, Scan.result, func.count(Scan.id))
+    kind = scanning.kind_of()
+    for d, cid, result, k, n in db.execute(
+        select(Scan.dispatch_date, Scan.channel_id, Scan.result, kind, func.count(Scan.id))
         .where(Scan.dispatch_date >= df, Scan.dispatch_date <= dt)
-        .group_by(Scan.dispatch_date, Scan.channel_id, Scan.result)
+        .group_by(Scan.dispatch_date, Scan.channel_id, Scan.result, kind)
     ):
         c = cells.setdefault((key(d), cid), {})
+        if k == "marked":  # one-time "shipped in OMSGuru" marks: not scans by the team
+            c["marked"] = c.get("marked", 0) + n
+            continue
         c[result] = c.get(result, 0) + n
-        c["scanned"] = c.get("scanned", 0) + n
+        if result in scanning.COUNTED_RESULTS:  # successful scans only; "Not found" = UNVERIFIED, apart
+            c["scanned"] = c.get("scanned", 0) + n
     for d, cid, n in db.execute(
         select(Scan.dispatch_date, Scan.channel_id, func.count(Scan.id))
         .where(Scan.dispatch_date >= df, Scan.dispatch_date <= dt, Scan.alert != "")
@@ -93,10 +98,12 @@ def _channel_summary(db: Session, df: date, dt: date, group: str):
         c = cells.setdefault((key(d), cid), {})
         c[outcome] = c.get(outcome, 0) + n
     periods: list[str] = []
+    seen: set[str] = set()
     d = df
     while d <= dt:
         k = key(d)
-        if k not in periods:
+        if k not in seen:
+            seen.add(k)
             periods.append(k)
         d += timedelta(days=1)
     used = {cid for (_, cid) in cells}
@@ -130,6 +137,8 @@ def channel_summary_export(date_from: str | None = None, date_to: str | None = N
     df = _parse_day(date_from) if date_from else dt - timedelta(days=364)
     if df > dt:
         raise HTTPException(400, "From date is after To date")
+    if (dt - df).days > 3 * 366 + 31:  # as the page: an unbounded range ran for hours
+        raise HTTPException(400, "At most about 3 years at a time")
     periods, chans, cells = _channel_summary(db, df, dt, group)
     title = f"Scanned shipments by sales channel ({'monthly' if group == 'month' else 'daily'}) - {df:%d-%m-%Y} to {dt:%d-%m-%Y}"
     return _file(channel_summary_xlsx(periods, chans, cells, title),

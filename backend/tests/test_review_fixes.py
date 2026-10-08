@@ -188,3 +188,46 @@ def test_text_longer_than_its_column_is_cut_not_a_failed_page(eng):
     assert o is not None
     limit = OmsOrder.__table__.c.buyer_name.type.length
     assert limit is None or len(o.buyer_name) <= limit
+
+
+def test_only_successful_scans_are_counted(eng):
+    """User, 9 Oct 2026: "Not found" is flagged and NOT counted as scanned; only successful scans count. The one-time
+    "shipped in OMSGuru" marks are not scans by the team either."""
+    from app.services import marking
+    from app.timeutil import today_dispatch_date
+
+    eng._apply_rows([_row("RFCOUNT0001", "ODRF8", "ODRF8-1")], "invoices")
+    packer = _user("rf.counter")
+    with TestClient(app) as c:
+        assert c.post("/api/auth/login", json={"username": "admin", "password": "test-admin-pass"}).status_code == 200
+
+        from app.services import cache
+
+        def dash():
+            cache.clear()  # scans below go straight to the service, not through the API that refreshes the cache
+            return next(ch for ch in c.get("/api/dashboard").json()["channels"] if ch["id"] == CID)
+
+        def ctx():
+            cache.clear()
+            return c.get(f"/api/scan-context?channel_id={CID}").json()["stats"]
+
+        d0, x0 = dash(), ctx()
+        assert _scan(packer, "RFCOUNT0001")["code"] == "OK"
+        assert _scan(packer, "NOTINOMS99887")["code"] == "NOT_IN_OMS"
+        d1, x1 = dash(), ctx()
+        assert d1["scanned"] == d0["scanned"] + 1 and d1["unverified"] == d0["unverified"] + 1
+        assert x1["scanned"] == x0["scanned"] + 1 and x1["not_found"] == x0["not_found"] + 1
+        mine = {u["user_id"]: u["scanned"] for u in c.get("/api/dashboard").json()["users"]}
+        assert mine[packer] == 1  # the not-found one is not in the packer's count
+
+        # a mark dated today is not a scan
+        eng._apply_rows([_row("RFCOUNT0002", "ODRF9", "ODRF9-1", status="Shipped")], "invoices")
+        with session_scope() as db:
+            db.scalar(select(OmsOrder).where(OmsOrder.tracking_norm == "RFCOUNT0002")).shipment_date = utcnow()
+            db.flush()
+            found = [(r, o) for r, o in marking.candidates(db, None) if r.awb == "RFCOUNT0002"]
+            assert found and marking.mark(db, found) == 1
+            mk = db.scalar(select(Scan).where(Scan.tracking_norm == "RFCOUNT0002"))
+            assert mk.dispatch_date == today_dispatch_date()
+        d2 = dash()
+        assert d2["scanned"] == d1["scanned"] and d2["marked"] == d1["marked"] + 1

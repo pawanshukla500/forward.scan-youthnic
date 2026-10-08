@@ -15,7 +15,7 @@ from ..models import Channel, OmsOrder, Scan, ScanEvent, User
 from ..oms.mapping import normalize_tracking
 from ..oms.sync import get_engine
 from ..security import current_user, require_supervisor
-from ..services import cache, reconcile, tracking
+from ..services import cache, reconcile, scanning, tracking
 from ..services.exports import pending_xlsx, scans_xlsx
 from ..services.scanning import order_payload, scan_payload
 from ..timeutil import iso_utc, to_local, today_dispatch_date, utcnow
@@ -56,14 +56,21 @@ def _dashboard(db: Session, d: date) -> dict:
     is_today = d == today_dispatch_date()
     chans = list(db.scalars(select(Channel).order_by(Channel.sort_order, Channel.name)))
 
-    per = {c.id: {"scanned": 0, "OK": 0, "WARN": 0, "UNVERIFIED": 0, "alerts": 0, "DUPLICATE": 0,
+    per = {c.id: {"scanned": 0, "OK": 0, "WARN": 0, "UNVERIFIED": 0, "marked": 0, "alerts": 0, "DUPLICATE": 0,
                   "WRONG_CHANNEL": 0, "BLOCKED": 0, "INVALID": 0} for c in chans}
-    for cid, result, n in db.execute(
-        select(Scan.channel_id, Scan.result, func.count(Scan.id)).where(Scan.dispatch_date == d).group_by(Scan.channel_id, Scan.result)
+    kind = scanning.kind_of()
+    for cid, result, k, n in db.execute(
+        select(Scan.channel_id, Scan.result, kind, func.count(Scan.id)).where(Scan.dispatch_date == d)
+        .group_by(Scan.channel_id, Scan.result, kind)
     ):
-        if cid in per:
-            per[cid][result] = n
-            per[cid]["scanned"] += n
+        if cid not in per:
+            continue
+        if k == "marked":  # one-time "shipped in OMSGuru" marks: out of Pending, not scans by the team
+            per[cid]["marked"] += n
+            continue
+        per[cid][result] = per[cid].get(result, 0) + n
+        if result in scanning.COUNTED_RESULTS:
+            per[cid]["scanned"] += n  # only successful scans; "Not found" is the separate UNVERIFIED count
     for cid, n in db.execute(
         select(Scan.channel_id, func.count(Scan.id)).where(Scan.dispatch_date == d, Scan.alert != "").group_by(Scan.channel_id)
     ):
@@ -90,17 +97,18 @@ def _dashboard(db: Session, d: date) -> dict:
         for uid, name, uname, n in db.execute(
             select(Scan.user_id, User.full_name, User.username, func.count(Scan.id))
             .join(User, User.id == Scan.user_id)
-            .where(Scan.dispatch_date == d)
+            .where(Scan.dispatch_date == d, scanning.counted())
             .group_by(Scan.user_id, User.full_name, User.username)
             .order_by(func.count(Scan.id).desc())
         )
     ]
     hourly = [0] * 24
-    for (ts,) in db.execute(select(Scan.scanned_at).where(Scan.dispatch_date == d)):
+    for (ts,) in db.execute(select(Scan.scanned_at).where(Scan.dispatch_date == d, scanning.counted())):
         hourly[to_local(ts).hour] += 1
 
     totals = {k: sum(ch[k] for ch in channels) for k in
-              ("scanned", "ok", "warn", "unverified", "alerts", "duplicate", "wrong_channel", "blocked", "invalid", "pending")}
+              ("scanned", "ok", "warn", "unverified", "marked", "alerts", "duplicate", "wrong_channel", "blocked",
+               "invalid", "pending")}
     eng = get_engine()
     sync = None
     if eng:
@@ -108,13 +116,14 @@ def _dashboard(db: Session, d: date) -> dict:
         sync = {"mode": "mock" if eng.client.__class__.__name__.startswith("Mock") else "live",
                 "invoices": jobs.get("invoices"), "limiter": eng.client.state.snapshot()}
     # Same weekday last week; for today only up to this time of day, so a morning is not compared with a full day.
-    wk = select(func.count(Scan.id)).where(Scan.dispatch_date == d - timedelta(days=7))
+    wk = select(func.count(Scan.id)).where(Scan.dispatch_date == d - timedelta(days=7), scanning.counted())
     if is_today:
         wk = wk.where(Scan.scanned_at <= utcnow() - timedelta(days=7))
     week_ago = db.scalar(wk) or 0
     metrics = {
         "success_rate": round(100 * totals["ok"] / totals["scanned"], 1) if totals["scanned"] else None,
         "flagged": totals["warn"] + totals["unverified"] + totals["alerts"],
+        "not_found": totals["unverified"],  # flagged, not counted in "scanned" until they verify
         "rejected": totals["duplicate"] + totals["wrong_channel"] + totals["blocked"] + totals["invalid"],
         "avg_scan_seconds": avg_scan_seconds(db, d),
         "same_day_last_week": week_ago,
@@ -144,6 +153,27 @@ def avg_scan_seconds(db: Session, d: date, user_id: int | None = None) -> float 
     return round(gaps[len(gaps) // 2], 1)  # median: robust to the odd long pause
 
 
+def _span(df: date, dt: date, max_days: int) -> None:
+    """Every report reads its whole date range: an unbounded one (date_from=0001-01-01) froze or killed the server."""
+    if df > dt:
+        raise HTTPException(400, "From date is after To date")
+    if (dt - df).days >= max_days:
+        raise HTTPException(400, f"At most {max_days} days at a time - choose a shorter range")
+
+
+EXPORT_DAYS = 31
+EXPORT_XLSX_ROWS = 50_000  # openpyxl holds the sheet in memory (~330 MB per 50,000 rows)
+EXPORT_CSV_ROWS = 250_000
+REPORT_DAYS = 92
+
+
+def _too_many(db: Session, stmt, cap: int) -> None:
+    n = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery())) or 0
+    if n > cap:
+        raise HTTPException(400, f"{n:,} scans in this selection - export at most {cap:,} at a time (fewer days or one "
+                                 "sales channel)")
+
+
 def _scan_query(date_from: date, date_to: date, channel_id: int | None, user_id: int | None, result: str | None,
                 q: str | None, alerts_only: bool, courier: str | None = None):
     stmt = select(Scan).where(Scan.dispatch_date >= date_from, Scan.dispatch_date <= date_to)
@@ -156,13 +186,15 @@ def _scan_query(date_from: date, date_to: date, channel_id: int | None, user_id:
     elif result:
         stmt = stmt.where(Scan.result == result)
     if courier:
-        stmt = stmt.where(Scan.order_json.like(f'%"courier": {json.dumps(courier)}%'))
+        stmt = stmt.where(Scan.order_json.contains(f'"courier": {json.dumps(courier)}', autoescape=True))
     if alerts_only:
         stmt = stmt.where(Scan.alert != "")
     if q:
         norm = normalize_tracking(q)
         # Order id / invoice live in the copy saved with each scan (the order itself may be pruned).
-        stmt = stmt.where(or_(Scan.tracking_norm.like(f"%{norm}%"), func.upper(Scan.order_json).like(f"%{norm}%")))
+        # literal text: "_" / "%" typed in the search box are not wildcards
+        stmt = stmt.where(or_(Scan.tracking_norm.contains(norm, autoescape=True),
+                              func.upper(Scan.order_json).contains(norm, autoescape=True)))
     return stmt
 
 
@@ -174,6 +206,7 @@ def list_scans(
     db: Session = Depends(get_db), user: User = Depends(current_user),
 ):
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
+    _span(df, dt, EXPORT_DAYS if q or courier else 366)  # text search reads every order copy in the range
     stmt = _scan_query(df, dt, channel_id, user_id, result, q, alerts_only, courier)
     total = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery())) or 0
     rows = db.scalars(stmt.order_by(Scan.id.desc()).offset((page - 1) * page_size).limit(page_size)).unique()
@@ -184,12 +217,13 @@ def list_scans(
 def export_scans(
     date_from: str | None = None, date_to: str | None = None, channel_id: int | None = None,
     user_id: int | None = None, result: str | None = None, q: str | None = None, alerts_only: bool = False,
-    courier: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user),
+    courier: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_supervisor),
 ):
+    # staff only: the file holds buyer names, cities and pincodes
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
-    if (dt - df).days > 62:
-        raise HTTPException(400, "Export at most 62 days at a time")
+    _span(df, dt, EXPORT_DAYS)
     stmt = _scan_query(df, dt, channel_id, user_id, result, q, alerts_only, courier)
+    _too_many(db, stmt, EXPORT_XLSX_ROWS)
     scans = list(db.scalars(stmt.order_by(Scan.channel_id, Scan.scanned_at)).unique())
     ch = db.get(Channel, channel_id) if channel_id else None
     span = df.strftime("%d-%m-%Y") + ("" if df == dt else " to " + dt.strftime("%d-%m-%Y"))
@@ -206,23 +240,23 @@ def export_scans(
 def export_scans_csv(
     date_from: str | None = None, date_to: str | None = None, channel_id: int | None = None,
     user_id: int | None = None, result: str | None = None, q: str | None = None, alerts_only: bool = False,
-    courier: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user),
+    courier: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_supervisor),
 ):
     import csv
     import io
 
-    from ..services.exports import SCAN_COLUMNS, scan_row
+    from ..services.exports import SCAN_COLUMNS, csv_safe, scan_row
 
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
-    if (dt - df).days > 62:
-        raise HTTPException(400, "Export at most 62 days at a time")
-    scans = db.scalars(_scan_query(df, dt, channel_id, user_id, result, q, alerts_only, courier)
-                       .order_by(Scan.channel_id, Scan.scanned_at)).unique()
+    _span(df, dt, EXPORT_DAYS)
+    stmt = _scan_query(df, dt, channel_id, user_id, result, q, alerts_only, courier)
+    _too_many(db, stmt, EXPORT_CSV_ROWS)
+    scans = db.scalars(stmt.order_by(Scan.channel_id, Scan.scanned_at)).unique()
     out = io.StringIO()
     w = csv.writer(out)
     w.writerow([c for c, _ in SCAN_COLUMNS])
     for i, s in enumerate(scans, start=1):
-        w.writerow(scan_row(i, s))
+        w.writerow([csv_safe(v) for v in scan_row(i, s)])
     name = f"dispatch_{df.isoformat()}{'' if df == dt else '_to_' + dt.isoformat()}.csv"
     return _file("\ufeff" + out.getvalue(), name, "text/csv; charset=utf-8")
 
@@ -232,6 +266,7 @@ def report_filters(date_from: str | None = None, date_to: str | None = None, db:
                    user: User = Depends(current_user)):
     """Couriers and operators that actually appear in the selected dates."""
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
+    _span(df, dt, REPORT_DAYS)
     couriers: set[str] = set()
     for (oj,) in db.execute(select(Scan.order_json).where(Scan.dispatch_date >= df, Scan.dispatch_date <= dt, Scan.order_json != "")):
         try:
@@ -254,9 +289,11 @@ def sku_summary(date_from: str | None = None, date_to: str | None = None, channe
     from ..services import reconcile
 
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
+    _span(df, dt, REPORT_DAYS)
     chans = {c.id: c.name for c in db.scalars(select(Channel))}
     agg: dict[str, dict] = {}
-    q = select(Scan.order_json, Scan.channel_id).where(Scan.dispatch_date >= df, Scan.dispatch_date <= dt, Scan.order_json != "")
+    q = select(Scan.order_json, Scan.channel_id).where(Scan.dispatch_date >= df, Scan.dispatch_date <= dt,
+                                                       Scan.order_json != "", scanning.counted())
     if channel_id:
         q = q.where(Scan.channel_id == channel_id)
     for oj, cid in db.execute(q):
@@ -293,13 +330,19 @@ def sku_summary(date_from: str | None = None, date_to: str | None = None, channe
 def operators(date_from: str | None = None, date_to: str | None = None, channel_id: int | None = None,
               db: Session = Depends(get_db), user: User = Depends(current_user)):
     df, dt = _parse_day(date_from), _parse_day(date_to or date_from)
+    _span(df, dt, REPORT_DAYS)
     q = select(Scan.user_id, Scan.result, Scan.alert, Scan.flags, Scan.station, Scan.scanned_at).where(
-        Scan.dispatch_date >= df, Scan.dispatch_date <= dt)
+        Scan.dispatch_date >= df, Scan.dispatch_date <= dt, ~scanning.is_mark())
     if channel_id:
         q = q.where(Scan.channel_id == channel_id)
     people: dict[int, dict] = {}
     for uid, result, alert, flags, station, ts in db.execute(q):
-        p = people.setdefault(uid, {"scans": 0, "ok": 0, "flagged": 0, "stations": set(), "first": ts, "last": ts})
+        p = people.setdefault(uid, {"scans": 0, "ok": 0, "flagged": 0, "not_found": 0, "stations": set(),
+                                    "first": ts, "last": ts})
+        if result not in scanning.COUNTED_RESULTS:  # "Not found": flagged, not a counted scan
+            p["not_found"] += 1
+            p["flagged"] += 1
+            continue
         p["scans"] += 1
         p["ok"] += result == "OK" and not alert
         p["flagged"] += result != "OK" or bool(alert) or "FLAGGED" in (flags or "")
@@ -318,6 +361,7 @@ def operators(date_from: str | None = None, date_to: str | None = None, channel_
         rows.append({
             "user_id": uid, "name": (u.full_name or u.username) if u else "?", "scans": p["scans"],
             "success_rate": round(100 * p["ok"] / p["scans"], 1) if p["scans"] else None, "flagged": p["flagged"],
+            "not_found": p["not_found"],
             "rejected": ev.get(uid, 0), "avg_scan_seconds": avg_scan_seconds(db, df, uid) if df == dt else None,
             "stations": sorted(p["stations"]), "first": iso_utc(p["first"]), "last": iso_utc(p["last"]),
         })
@@ -337,7 +381,8 @@ def marketplaces(db: Session = Depends(get_db), user: User = Depends(current_use
         awb_q = awb_q.where(OmsOrder.awb_generated_at >= counted_from)
     awb7 = dict(db.execute(awb_q.group_by(OmsOrder.channel_id)).all())
     last = dict(db.execute(select(OmsOrder.channel_id, func.max(OmsOrder.synced_at)).group_by(OmsOrder.channel_id)).all())
-    scans_today = dict(db.execute(select(Scan.channel_id, func.count(Scan.id)).where(Scan.dispatch_date == day)
+    scans_today = dict(db.execute(select(Scan.channel_id, func.count(Scan.id))
+                                  .where(Scan.dispatch_date == day, scanning.counted())
                                   .group_by(Scan.channel_id)).all())
     eng = get_engine()
     sync_ok = None
@@ -418,7 +463,7 @@ def history(days: int = Query(14, ge=1, le=90), db: Session = Depends(get_db), u
     start = end - timedelta(days=days - 1)
     rows = db.execute(
         select(Scan.dispatch_date, Scan.channel_id, func.count(Scan.id))
-        .where(Scan.dispatch_date >= start, Scan.dispatch_date <= end)
+        .where(Scan.dispatch_date >= start, Scan.dispatch_date <= end, scanning.counted())
         .group_by(Scan.dispatch_date, Scan.channel_id)
     ).all()
     out: dict[str, dict] = {}
