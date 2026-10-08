@@ -272,6 +272,7 @@ def _pg_engine(url: str):
 def _pg_counts(url: str) -> dict[str, int]:
     from sqlalchemy import text
 
+    from .. import models  # noqa: F401 - registers the tables (a one-off script has not imported them yet)
     from ..db import Base
 
     counts: dict[str, int] = {}
