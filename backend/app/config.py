@@ -61,7 +61,12 @@ def _default_backup_dir() -> str:
         return str(db.parent / "backups" / db.stem)
     # PostgreSQL: under data/ - the folder the server keeps across deploys (docker-compose mounts ./data).
     # The old default "backups/auto" sat inside the container, so every deploy threw the backups away.
-    name = url.rsplit("/", 1)[-1].split("?", 1)[0] or "postgres"
+    try:
+        from sqlalchemy.engine import make_url
+
+        name = make_url(url).database or "postgres"
+    except Exception:  # noqa: BLE001 - an unparsable url is reported by the engine, not here
+        name = "postgres"
     return str(ROOT_DIR / "data" / "backups" / f"pg-{name}")
 
 

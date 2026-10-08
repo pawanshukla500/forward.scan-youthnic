@@ -180,7 +180,7 @@ def _offsite(files: list[Path], sub: str, keep_days: int) -> dict[str, Any] | No
     except (RuntimeError, ValueError, OSError) as exc:
         return {"remote": target, "ok": False, "at": at, "error": str(exc)[:300]}
     try:  # older copies in the cloud; a failure here never fails the backup
-        _rclone(["delete", "--min-age", f"{keep_days}d", target], timeout=300)
+        _rclone(["delete", "--drive-use-trash=false", "--min-age", f"{keep_days}d", target], timeout=300)
     except RuntimeError as exc:
         log.warning("Could not remove old offsite copies in %s: %s", target, exc)
     return res

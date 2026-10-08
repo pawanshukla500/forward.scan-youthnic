@@ -47,6 +47,7 @@ from app.services.backup import (  # noqa: E402
 )
 
 BACKUPS = Path(settings.backup_dir)
+UPSERT_CHUNK = 1000
 
 
 def _meta(p: Path) -> dict:
@@ -111,10 +112,10 @@ def apply_recent_postgres(engine, recent: Path) -> str:
             scans, events = Base.metadata.tables["scans"], Base.metadata.tables["scan_events"]
             with engine.begin() as pg:
                 for t in small:  # upsert: rows that other tables point to are never deleted
+                    pk = [c.name for c in t.primary_key.columns]
                     rows = [dict(x._mapping) for x in r.execute(select(t))]
-                    if rows:
-                        stmt = pg_insert(t).values(rows)
-                        pk = [c.name for c in t.primary_key.columns]
+                    for i in range(0, len(rows), UPSERT_CHUNK):  # PostgreSQL: max 65,535 parameters a statement
+                        stmt = pg_insert(t).values(rows[i:i + UPSERT_CHUNK])
                         stmt = stmt.on_conflict_do_update(
                             index_elements=pk, set_={c.name: stmt.excluded[c.name] for c in t.columns if c.name not in pk})
                         pg.execute(stmt)
@@ -127,6 +128,9 @@ def apply_recent_postgres(engine, recent: Path) -> str:
                     while batch := res.fetchmany(2000):
                         rows = [dict(x._mapping) for x in batch]
                         if t is scans:
+                            # The same AWB may still be in the full backup with an older scan that was removed
+                            # (voided) afterwards and scanned again - the recent copy is the newer truth.
+                            pg.execute(delete(scans).where(scans.c.tracking_norm.in_([x["tracking_norm"] for x in rows])))
                             for row in rows:
                                 if row["order_id"] is not None and row["order_id"] not in known_orders:
                                     row["order_id"] = None
@@ -139,8 +143,9 @@ def apply_recent_postgres(engine, recent: Path) -> str:
     return since
 
 
-def restore_postgres(full: Path, recent: Path | None, url: str | None = None) -> dict:
-    """Safety pg_dump of the current database, pg_restore --clean of [full], then merge [recent]."""
+def restore_postgres(full: Path, recent: Path | None, url: str | None = None, safety_dump: bool = True) -> dict:
+    """Safety pg_dump of the current database, pg_restore --clean of [full], then merge [recent].
+    [safety_dump] False: for a database too damaged for pg_dump (--skip-safety-dump)."""
     from sqlalchemy import create_engine, text
 
     url = url or settings.database_url
@@ -149,17 +154,29 @@ def restore_postgres(full: Path, recent: Path | None, url: str | None = None) ->
     if not check["ok"]:
         sys.exit(f"{full.name} cannot be restored: {check['quick_check']} - nothing was changed. Try an older backup.")
 
-    incident = BACKUPS.parent / f"incident-{datetime.now():%Y%m%d-%H%M%S}"
-    incident.mkdir(parents=True, exist_ok=True)
-    safety = incident / f"before-restore-{dbname}.dump"
-    pg_run(["pg_dump", "--format=custom", "--no-owner", "--no-acl", *args, "-d", dbname, "-f", str(safety)], env)
-    print(f"Saved the current database to {safety}")
+    safety = None
+    if safety_dump:
+        incident = BACKUPS.parent / f"incident-{datetime.now():%Y%m%d-%H%M%S}"
+        incident.mkdir(parents=True, exist_ok=True)
+        safety = incident / f"before-restore-{dbname}.dump"
+        try:
+            pg_run(["pg_dump", "--format=custom", "--no-owner", "--no-acl", *args, "-d", dbname, "-f", str(safety)], env)
+        except RuntimeError as exc:
+            sys.exit(f"Could not save the current database first ({exc}). Nothing was changed. If the database is too "
+                     "damaged to be saved, run again with --skip-safety-dump.")
+        print(f"Saved the current database to {safety}")
 
     pg_run(["pg_restore", "--clean", "--if-exists", "--no-owner", "--no-acl", "--single-transaction",
             "--exit-on-error", *args, "-d", dbname, str(full)], env)
+    print(f"Restored the full backup {full.name}")
     engine = create_engine(url)
     try:
-        since = apply_recent_postgres(engine, recent) if recent else None
+        try:
+            since = apply_recent_postgres(engine, recent) if recent else None
+        except Exception as exc:  # noqa: BLE001 - say exactly what state the database is in
+            sys.exit(f"The full backup IS restored, but merging the recent scans failed: {exc}\n"
+                     f"Retry with --recent <another fs-recent-*.db> or --no-recent."
+                     + (f" The database before the restore is in {safety}." if safety else ""))
         with engine.connect() as c:
             scans = c.execute(text("SELECT count(*) FROM scans")).scalar_one()
     finally:
@@ -167,7 +184,7 @@ def restore_postgres(full: Path, recent: Path | None, url: str | None = None) ->
     if since:
         print(f"Merged recent scans since {since}")
     print(f"Restored {full.name}: {scans:,} scans. Start the server again (docker start Forward-Scan).")
-    return {"scans": scans, "since": since, "safety": str(safety)}
+    return {"scans": scans, "since": since, "safety": str(safety) if safety else None}
 
 
 def main() -> None:
@@ -178,6 +195,8 @@ def main() -> None:
     ap.add_argument("--no-recent", action="store_true", help="do not merge a recent copy")
     ap.add_argument("--yes", action="store_true", help="really replace the current database")
     ap.add_argument("--force", action="store_true", help="restore a backup taken from a different database file")
+    ap.add_argument("--skip-safety-dump", action="store_true",
+                    help="PostgreSQL: do not save the current database first (only when it is too damaged for pg_dump)")
     a = ap.parse_args()
 
     if not a.backup and not a.latest:
@@ -200,9 +219,13 @@ def main() -> None:
         _, _, dbname = pg_conn_args()
         print(f"Database : PostgreSQL {dbname}\nBackup   : {full} (taken {taken(full)})")
         print(f"Recent   : {recent} (taken {taken(recent)})" if recent else "Recent   : none newer than the backup")
+        for f in filter(None, (full, recent)):
+            source = _meta(f).get("source")
+            if source and source != dbname and not a.force:
+                sys.exit(f"{f.name} is a backup of database {source}, not of {dbname}. Add --force only if that is really meant.")
         if not a.yes:
             sys.exit("\nNothing changed. Stop the app container and add --yes to restore.")
-        restore_postgres(full, recent)
+        restore_postgres(full, recent, safety_dump=not a.skip_safety_dump)
         return
 
     target = db_path()

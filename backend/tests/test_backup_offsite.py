@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import shutil
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -95,6 +95,9 @@ def test_postgres_backups_are_kept_on_the_data_volume(monkeypatch):
     """The old default (backups/auto) was inside the container: every deploy deleted every backup."""
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@host.docker.internal:5433/forward_scan?sslmode=disable")
     assert Path(config._default_backup_dir()) == config.ROOT_DIR / "data" / "backups" / "pg-forward_scan"
+    # no database name in the url: never the user / password / host as the folder (or Drive folder) name
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:secret@db.example.com")
+    assert Path(config._default_backup_dir()).name == "pg-postgres"
 
 
 @pytest.mark.skipif(
@@ -122,16 +125,17 @@ def test_postgres_full_and_recent_backups_restore_every_scan(tmp_path, monkeypat
     scans, events = models.Scan.__table__, models.ScanEvent.__table__
     today = date.today()
 
-    def add_scan(c, awb):
-        sid = c.execute(scans.insert().values(tracking_norm=awb, tracking_raw=awb, dispatch_date=today, user_id=1,
+    def add_scan(c, awb, day=None):
+        sid = c.execute(scans.insert().values(tracking_norm=awb, tracking_raw=awb, dispatch_date=day or today, user_id=1,
                                               channel_id=7).returning(scans.c.id)).scalar_one()
-        c.execute(events.insert().values(dispatch_date=today, user_id=1, channel_id=7, tracking_raw=awb,
+        c.execute(events.insert().values(dispatch_date=day or today, user_id=1, channel_id=7, tracking_raw=awb,
                                          tracking_norm=awb, outcome="ACCEPTED", scan_id=sid))
 
     with eng.begin() as c:
         c.execute(users.insert().values(id=1, username="packer", password_hash="x"))
         c.execute(channels.insert().values(id=7, name="VB - Myntra", marketplace="Myntra"))
         add_scan(c, "PGAWB-BEFORE")
+        add_scan(c, "PGAWB-VOIDED", day=today - timedelta(days=5))  # an old scan, outside the recent window
 
     full = backup._run_full_postgres(url)
     assert full["ok"] and full["verify"]["quick_check"] == "ok" and full["verify"]["checked"]
@@ -140,8 +144,11 @@ def test_postgres_full_and_recent_backups_restore_every_scan(tmp_path, monkeypat
 
     with eng.begin() as c:
         add_scan(c, "PGAWB-AFTER")  # only the recent copy has this one
+        # the old scan was removed after the full backup and the packet scanned again today
+        c.execute(scans.delete().where(scans.c.tracking_norm == "PGAWB-VOIDED"))
+        add_scan(c, "PGAWB-VOIDED")
     recent = backup._run_recent_postgres(url)
-    assert recent["ok"] and recent["counts"]["scans"] == 2 and recent["counts"]["scan_events"] == 2
+    assert recent["ok"] and recent["counts"]["scans"] == 3 and recent["counts"]["scan_events"] == 3
     # the recent copy no longer replaces the daily backup or its history
     assert json.loads((folder / "last_full.json").read_text())["file"] == full["file"]
     assert sorted(p.name for p in (folder / "daily").glob("*.dump")) == [full["file"]]
@@ -151,9 +158,10 @@ def test_postgres_full_and_recent_backups_restore_every_scan(tmp_path, monkeypat
         c.execute(scans.delete())
 
     out = restore_backup.restore_postgres(dump, folder / "recent" / recent["file"], url=url)
-    assert out["scans"] == 2 and Path(out["safety"]).exists()
+    assert out["scans"] == 3 and Path(out["safety"]).exists()
     with eng.begin() as c:
-        assert set(c.execute(select(scans.c.tracking_norm)).scalars()) == {"PGAWB-BEFORE", "PGAWB-AFTER"}
-        assert c.execute(select(func.count()).select_from(events)).scalar_one() == 2
+        rows = c.execute(select(scans.c.tracking_norm, scans.c.dispatch_date)).all()
+        assert sorted(t for t, _ in rows) == ["PGAWB-AFTER", "PGAWB-BEFORE", "PGAWB-VOIDED"]
+        assert dict(rows)["PGAWB-VOIDED"] == today  # the newer scan from the recent copy, not the removed one
         add_scan(c, "PGAWB-NEXT")  # ids continue after the restored rows
     eng.dispose()
