@@ -39,6 +39,8 @@ export interface AwbCounts {
   pending: number;
   overdue: number;
   left_unscanned: number;
+  /** of scanned: recorded by the one-time "already shipped in OMSGuru" mark, not by a packer */
+  marked_shipped?: number;
   cancelled: number;
   pct: number | null;
 }

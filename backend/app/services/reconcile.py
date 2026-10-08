@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..models import Channel, OmsOrder, Scan, SyncState
+from ..models import MARKED_SHIPPED_FLAG, Channel, OmsOrder, Scan, SyncState
 from ..timeutil import day_bounds_utc, dispatch_date_for, iso_utc, to_local, today_dispatch_date, utcnow
 from . import cache, tracking
 
@@ -46,6 +46,8 @@ class AwbRec:
     sla: datetime | None
     order_ids: list[int]
     scan_id: int | None
+    # scanned by the one-time "already shipped in OMSGuru" mark, not by a packer (counted apart as marked_shipped)
+    marked: bool = False
 
     def bucket(self) -> str:
         if self.scan_id:
@@ -71,7 +73,7 @@ def collect(db: Session, *, start: datetime | None = None, end: datetime | None 
     scanned / cancelled / shipped AWBs in SQL instead of loading them all."""
     q = (
         select(OmsOrder.id, OmsOrder.tracking_norm, OmsOrder.channel_id, OmsOrder.status_group,
-               OmsOrder.awb_generated_at, OmsOrder.sla_date, Scan.id)
+               OmsOrder.awb_generated_at, OmsOrder.sla_date, Scan.id, Scan.flags)
         .outerjoin(Scan, Scan.tracking_norm == OmsOrder.tracking_norm)
         .where(OmsOrder.tracking_norm != "")
     )
@@ -87,10 +89,11 @@ def collect(db: Session, *, start: datetime | None = None, end: datetime | None 
     if counted_from is not None:
         q = q.where(OmsOrder.awb_generated_at >= counted_from)
     recs: dict[str, AwbRec] = {}
-    for oid, awb, cid, status, awb_at, sla, scan_id in db.execute(q):
+    for oid, awb, cid, status, awb_at, sla, scan_id, scan_flags in db.execute(q):
         r = recs.get(awb)
         if r is None:
-            recs[awb] = AwbRec(awb, cid, status, awb_at, sla, [oid], scan_id)
+            marked = bool(scan_flags) and MARKED_SHIPPED_FLAG in scan_flags.split(",")
+            recs[awb] = AwbRec(awb, cid, status, awb_at, sla, [oid], scan_id, marked)
             continue
         r.order_ids.append(oid)
         if _RANK.get(status, 3) < _RANK.get(r.status, 3):
@@ -102,7 +105,8 @@ def collect(db: Session, *, start: datetime | None = None, end: datetime | None 
 
 
 def _empty() -> dict[str, int]:
-    return {"generated": 0, "scanned": 0, "pending": 0, "overdue": 0, "left_unscanned": 0, "cancelled": 0}
+    return {"generated": 0, "scanned": 0, "pending": 0, "overdue": 0, "left_unscanned": 0, "cancelled": 0,
+            "marked_shipped": 0}
 
 
 def summary(db: Session, day: date) -> dict[str, Any]:
@@ -128,11 +132,13 @@ def summary(db: Session, day: date) -> dict[str, Any]:
             row["generated"] += 1
             row[b] += 1
             row["left_unscanned"] += r.shipped_in_oms
+            row["marked_shipped"] += r.marked
         if r.awb_at is not None and start <= r.awb_at < end:
             row = per.setdefault(r.channel_id, _empty())
             row["generated"] += 1
             row[b] += 1
             row["left_unscanned"] += r.shipped_in_oms
+            row["marked_shipped"] += r.marked
             if b == "pending" and day < today:
                 row["overdue"] += 1
         elif day == today and b == "pending" and r.awb_at is not None and r.awb_at < today_start:
