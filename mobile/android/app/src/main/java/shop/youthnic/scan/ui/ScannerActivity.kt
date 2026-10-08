@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
+import android.media.AudioManager
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Range
@@ -181,6 +182,7 @@ class ScannerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityScannerBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        volumeControlStream = AudioManager.STREAM_MUSIC  // the volume keys set the beep volume here
 
         channelId = intent.getIntExtra(EXTRA_CHANNEL_ID, 0)
         channelName = intent.getStringExtra(EXTRA_CHANNEL_NAME) ?: "Marketplace"
@@ -632,7 +634,7 @@ class ScannerActivity : AppCompatActivity() {
                 refreshSoon()
             } else {
                 when (val ex = result.exceptionOrNull()) {
-                    is NetworkException -> displayNetworkError(rawAwb)
+                    is NetworkException -> if (ex.isOffline) displayNetworkError(rawAwb) else displayNotConfirmed(rawAwb)
                     is AuthExpiredException -> goToLogin()
                     else -> {
                         setOnline(true)
@@ -762,13 +764,14 @@ class ScannerActivity : AppCompatActivity() {
             VerdictType.DUPLICATE -> R.string.verdict_duplicate
             VerdictType.NOT_IN_OMS -> R.string.verdict_not_in_oms
             VerdictType.STOP, VerdictType.ERROR -> R.string.verdict_stop
+            VerdictType.WRONG_BARCODE -> R.string.verdict_wrong_barcode
         }
     )
 
     /** What to do with the packet now (the same advice as the web scan page). */
     private fun actionFor(response: ScanResponse): String = getString(
         when (response.verdictType) {
-            VerdictType.OK -> R.string.action_ok
+            VerdictType.OK -> if (response.code == "ALREADY_SAVED") R.string.action_already_saved else R.string.action_ok
             VerdictType.DUPLICATE -> R.string.action_duplicate
             VerdictType.NOT_IN_OMS -> R.string.action_not_found
             VerdictType.CHECK -> when (response.code) {
@@ -778,7 +781,12 @@ class ScannerActivity : AppCompatActivity() {
                 "CHANNEL_UNMAPPED" -> R.string.action_check_channel_unmapped
                 else -> R.string.action_check
             }
-            VerdictType.STOP, VerdictType.ERROR -> R.string.action_stop
+            VerdictType.STOP, VerdictType.ERROR -> when (response.code) {
+                "ALERT" -> R.string.action_alert
+                "REPLACED" -> R.string.action_old_label
+                else -> R.string.action_stop
+            }
+            VerdictType.WRONG_BARCODE -> R.string.action_wrong_barcode
         }
     )
 
@@ -792,7 +800,12 @@ class ScannerActivity : AppCompatActivity() {
             vType == VerdictType.DUPLICATE -> response.message.removePrefix("DUPLICATE - ").replaceFirstChar { it.uppercase() }
             else -> response.message
         }
-        showVerdict(cue, titleFor(vType), message, actionFor(response), getString(styleOf(cue).stamp), counted = true)
+        val wrong = vType == VerdictType.WRONG_BARCODE
+        // the packer's own scan of a moment ago, sent again (no answer in time): OK, but already in the tally
+        val repeat = response.code == "ALREADY_SAVED"
+        val stamp = getString(if (wrong) R.string.signal_wrong_barcode else styleOf(cue).stamp)
+        // nothing was saved for a wrong barcode: not a scan, not in the tally / scan number
+        showVerdict(cue, titleFor(vType), message, actionFor(response), stamp, counted = !wrong && !repeat)
         binding.tvResultAwb.text = awb
 
         val order = response.order
@@ -826,6 +839,20 @@ class ScannerActivity : AppCompatActivity() {
             setPadding(0, pad, 0, pad)
         }
         binding.layoutItemsList.addView(tv)
+    }
+
+    /** Sent, but no answer in time: it may be saved. Rescanning shows the result (the server answers OK for
+     *  the same packer's own scan a moment ago - never "Duplicate - set aside"). */
+    private fun displayNotConfirmed(awb: String) {
+        showVerdict(
+            Cue.CHECK, getString(R.string.verdict_not_confirmed), getString(R.string.not_confirmed_message),
+            getString(R.string.action_not_confirmed), getString(R.string.signal_not_confirmed), counted = false
+        )
+        binding.tvResultAwb.text = awb
+        binding.tvResultOrderId.text = "-"
+        binding.tvResultCourier.text = "-"
+        binding.tvResultItemsCount.text = "-"
+        binding.layoutItemsList.removeAllViews()
     }
 
     private fun displayNetworkError(awb: String) {
@@ -976,6 +1003,7 @@ class ScannerActivity : AppCompatActivity() {
         if (row.orderId.isNotBlank()) meta.add(getString(R.string.order_prefix, row.orderId))
         if (row.courier.isNotBlank()) meta.add(row.courier)
         if (row.skus > 0 || row.units > 0) meta.add(itemsSummary(row.skus, row.units))
+        if (row.shippedInOms) meta.add(0, getString(R.string.pending_shipped_in_oms))
         rb.tvRowMeta.text = meta.joinToString(" · ")
 
         val awbAt = Ui.parseIsoUtc(row.awbGeneratedAt)

@@ -36,7 +36,7 @@ class SoundManager(
 
     /** Builds the beeps up front (a few ms) so the first scan is not late. */
     fun prepare() {
-        Cue.values().forEach { cue -> tracks.getOrPut(cue) { buildTrack(cue) } }
+        Cue.values().forEach { cue -> if (cue !in tracks) tracks[cue] = buildTrack(cue) }
     }
 
     fun play(cue: Cue) {
@@ -49,7 +49,8 @@ class SoundManager(
         tracks.values.forEach { t ->
             t?.let { runCatching { if (it.playState == AudioTrack.PLAYSTATE_PLAYING) it.stop() } }
         }
-        val track = tracks.getOrPut(cue) { buildTrack(cue) }
+        if (cue !in tracks) tracks[cue] = buildTrack(cue)  // a null (cannot build) is remembered too
+        val track = tracks[cue]
         val played = track != null && runCatching {
             track.stop()
             track.reloadStaticData()

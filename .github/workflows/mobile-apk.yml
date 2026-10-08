@@ -191,6 +191,12 @@ jobs:
 
       # The server serves data/app/forward-scan-app.apk + latest.json (backend/app/routers/mobile_app.py):
       # the public download page / QR, and the version the installed apps compare against.
+      - name: Refuse to publish a build for another server
+        if: ${{ github.event_name != 'push' && inputs.publish && inputs.api_url != 'https://scan.youthnic.shop' }}
+        run: |
+          echo "::error::This build talks to ${{ inputs.api_url }} - publishing it would move every production phone there. Run with publish off."
+          exit 1
+
       - name: Write version file for the server
         if: ${{ github.event_name == 'push' || inputs.publish }}
         env:

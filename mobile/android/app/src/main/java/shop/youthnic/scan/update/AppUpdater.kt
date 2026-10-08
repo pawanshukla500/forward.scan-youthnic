@@ -299,7 +299,7 @@ object AppUpdater {
     private fun verifyAndInstall(activity: AppCompatActivity, release: AppRelease, file: File) {
         activity.lifecycleScope.launch {
             val intact = withContext(Dispatchers.IO) {
-                file.isFile && (release.sha256.isBlank() || sha256(file).equals(release.sha256, ignoreCase = true))
+                file.isFile && release.sha256.isNotBlank() && sha256(file).equals(release.sha256, ignoreCase = true)
             }
             if (!intact) {
                 file.delete()
