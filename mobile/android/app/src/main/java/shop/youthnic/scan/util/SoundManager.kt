@@ -46,7 +46,9 @@ class SoundManager(
 
     private fun beep(cue: Cue) {
         // A new result cuts off the previous one: the packer always hears the latest scan.
-        tracks.values.forEach { t -> runCatching { if (t?.playState == AudioTrack.PLAYSTATE_PLAYING) t.stop() } }
+        tracks.values.forEach { t ->
+            t?.let { runCatching { if (it.playState == AudioTrack.PLAYSTATE_PLAYING) it.stop() } }
+        }
         val track = tracks.getOrPut(cue) { buildTrack(cue) }
         val played = track != null && runCatching {
             track.stop()
