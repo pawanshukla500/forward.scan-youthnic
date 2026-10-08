@@ -771,7 +771,7 @@ class ScannerActivity : AppCompatActivity() {
     /** What to do with the packet now (the same advice as the web scan page). */
     private fun actionFor(response: ScanResponse): String = getString(
         when (response.verdictType) {
-            VerdictType.OK -> R.string.action_ok
+            VerdictType.OK -> if (response.code == "ALREADY_SAVED") R.string.action_already_saved else R.string.action_ok
             VerdictType.DUPLICATE -> R.string.action_duplicate
             VerdictType.NOT_IN_OMS -> R.string.action_not_found
             VerdictType.CHECK -> when (response.code) {
@@ -781,7 +781,11 @@ class ScannerActivity : AppCompatActivity() {
                 "CHANNEL_UNMAPPED" -> R.string.action_check_channel_unmapped
                 else -> R.string.action_check
             }
-            VerdictType.STOP, VerdictType.ERROR -> if (response.code == "ALERT") R.string.action_alert else R.string.action_stop
+            VerdictType.STOP, VerdictType.ERROR -> when (response.code) {
+                "ALERT" -> R.string.action_alert
+                "REPLACED" -> R.string.action_old_label
+                else -> R.string.action_stop
+            }
             VerdictType.WRONG_BARCODE -> R.string.action_wrong_barcode
         }
     )
@@ -797,9 +801,11 @@ class ScannerActivity : AppCompatActivity() {
             else -> response.message
         }
         val wrong = vType == VerdictType.WRONG_BARCODE
+        // the packer's own scan of a moment ago, sent again (no answer in time): OK, but already in the tally
+        val repeat = response.code == "ALREADY_SAVED"
         val stamp = getString(if (wrong) R.string.signal_wrong_barcode else styleOf(cue).stamp)
         // nothing was saved for a wrong barcode: not a scan, not in the tally / scan number
-        showVerdict(cue, titleFor(vType), message, actionFor(response), stamp, counted = !wrong)
+        showVerdict(cue, titleFor(vType), message, actionFor(response), stamp, counted = !wrong && !repeat)
         binding.tvResultAwb.text = awb
 
         val order = response.order

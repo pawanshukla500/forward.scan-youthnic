@@ -211,4 +211,6 @@
     <string name="not_confirmed_message">The server did not answer in time - the scan may be saved</string>
     <string name="action_not_confirmed">Scan the same packet again to see the result</string>
     <string name="pending_shipped_in_oms">Shipped in OMSGuru, not scanned</string>
+    <string name="action_already_saved">Already saved a moment ago - put it in the bag (not counted twice)</string>
+    <string name="action_old_label">Old label - OMSGuru made a new AWB for this order. Print the new label and scan that</string>
 </resources>
