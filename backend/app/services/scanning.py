@@ -273,7 +273,9 @@ def _open_manifest(db: Session, day, channel_id: int) -> Manifest:
         .where(Manifest.dispatch_date == day, Manifest.channel_id == channel_id, Manifest.status == "OPEN")
         .order_by(Manifest.seq.desc())
         .limit(1)
-        .with_for_update(read=True)  # shared: scans don't wait for each other, a close waits for them
+        # shared: scans don't wait for each other, a close waits for them. OF manifests only: the eager-loaded
+        # relations are LEFT OUTER JOINs, and PostgreSQL refuses a lock on the nullable side of one (500 on every scan)
+        .with_for_update(read=True, of=Manifest)
     )
     if m:
         return m
@@ -481,7 +483,7 @@ def process_scan(
     manifest = _open_manifest(db, day, channel_id)
     if marked_id is not None:  # accepted: the real scan takes the place of the "shipped in OMSGuru" mark
         # re-read from the database (not the session's copy) and lock it: another station may replace it meanwhile
-        mark = db.get(Scan, marked_id, populate_existing=True, with_for_update=True)
+        mark = db.get(Scan, marked_id, populate_existing=True, with_for_update={"of": Scan})
         if mark is not None and _is_marked(mark):
             _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=mark.tracking_norm,
                    outcome="MARK_REPLACED", scan_id=mark.id,

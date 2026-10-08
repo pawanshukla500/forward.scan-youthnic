@@ -46,7 +46,7 @@ def list_manifests(day: str | None = Query(None, alias="date"), db: Session = De
 
 @router.post("/manifests/{manifest_id}/close")
 def close_manifest(manifest_id: int, db: Session = Depends(get_db), user: User = Depends(require_supervisor)):
-    m = db.get(Manifest, manifest_id, with_for_update=True)  # waits for scans being saved into it
+    m = db.get(Manifest, manifest_id, with_for_update={"of": Manifest})  # waits for scans being saved into it
     if not m:
         raise HTTPException(404, "Manifest not found")
     if m.status == "CLOSED":
