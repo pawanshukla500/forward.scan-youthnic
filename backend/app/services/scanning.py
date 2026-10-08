@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from ..models import Channel, Manifest, OmsOrder, Scan, ScanEvent, SkuPhoto, User
 from ..oms.mapping import normalize_sku_key, normalize_tracking
 from ..timeutil import dispatch_date_for, iso_utc, to_local, today_dispatch_date, utcnow
-from . import cache
+from . import awb_shapes, cache
 from .realtime import hub
 
 MIN_TRACKING_LEN = 6
@@ -65,9 +65,9 @@ def evaluate(orders: list[OmsOrder], selected_channel_id: int, channels: dict[in
     # Shipped / In Transit in OMS is normal, not a check: marketplaces such as Meesho (Valmo) mark the
     # order In Transit as soon as the label is made, and every scanned packet reaches it after pickup -
     # flagging it made good scans amber and counted them as "needs review" (user, 5 Oct 2026).
-    if "MOVED" in groups:
-        flags.append("STATUS_CHANGED")
-        notes.append("Order is no longer Ready-to-ship in OMS - verify status")
+    # "MOVED" (left Packed / Ready-to-ship, status not fetched yet) is the same: 97 % turn out Shipped / In Transit
+    # (exit check, 8 Oct 2026). It scans OK and leaves Pending; a cancellation found later still raises the
+    # "AFTER SCAN" alert on the scan (reverify_scans), so a cancelled packet is not missed.
     if flags:
         return Verdict("WARN", flags, "; ".join(notes))
     return Verdict("OK", [], "Verified")
@@ -289,11 +289,12 @@ def looks_like_qr(raw: str, norm: str) -> bool:
     return False
 
 
-def _invalid(db: Session, *, user: User, station: str, channel_id: int, raw: str, norm: str, message: str) -> dict:
+def _invalid(db: Session, *, user: User, station: str, channel_id: int, raw: str, norm: str, message: str,
+             code: str = "INVALID") -> dict:
     _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm, outcome="INVALID",
            message=message)
     db.commit()
-    return {"severity": "error", "code": "INVALID", "message": message}
+    return {"severity": "error", "code": code, "message": message}
 
 
 def _duplicate_response(db: Session, existing: Scan, user: User, station: str, channel_id: int, raw: str) -> dict:
@@ -339,12 +340,24 @@ def process_scan(
             message=f"Invalid barcode '{raw[:40]}' - too short for a tracking ID",
         )
 
+    if awb_shapes.has_symbols(raw):  # the 2-D route code / a bad read: never an AWB, no lookup needed
+        return _invalid(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm,
+                        message=awb_shapes.wrong_barcode(db, channel_id, raw, norm, channel.name), code="WRONG_BARCODE")
+
     orders = find_orders(db, norm)
     key = _dedupe_key(norm, orders)
     # Duplicates are answered from the database alone - no API credit spent on them.
     existing = db.scalar(select(Scan).where(Scan.tracking_norm == key))
     if existing:
         return _duplicate_response(db, existing, user, station, channel_id, raw)
+
+    # Not in the local copy and not shaped like this channel's AWBs: another barcode on the label / packet.
+    # Rejected before the live lookup, so wrong barcodes spend no OMSGuru credits and never become "Not found".
+    if not orders:
+        why = awb_shapes.wrong_barcode(db, channel_id, raw, norm, channel.name)
+        if why:
+            return _invalid(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm,
+                            message=why, code="WRONG_BARCODE")
 
     # Live fetch from OMSGuru for fresh status/details (falls back to the local copy if busy).
     live_info: dict[str, Any] = {"live": "off"}
@@ -455,15 +468,19 @@ def _linked_response(db: Session, existing: Scan, user: User, station: str, chan
 
 RETIRED_FLAG = "ALREADY_SHIPPED_IN_OMS"
 _RETIRED_NOTE = "OMS already shows this order as shipped"
+# flag -> the note it added to the message; both stopped being a Check (5 Oct and 8 Oct 2026)
+RETIRED_CHECKS = {RETIRED_FLAG: _RETIRED_NOTE,
+                  "STATUS_CHANGED": "Order is no longer Ready-to-ship in OMS - verify status"}
 
 
 def clear_shipped_checks(db: Session) -> int:
-    """Scans saved while "already shipped in OMS" was still a Check: drop that flag; a scan with no other
-    reason left is OK. Idempotent - runs at every start, finds nothing once done."""
+    """Scans saved while "already shipped in OMS" / "no longer Ready-to-ship" was still a Check: drop that flag;
+    a scan with no other reason left is OK. Idempotent - runs at every start, finds nothing once done."""
     fixed = 0
-    for scan in db.scalars(select(Scan).where(Scan.result == "WARN", Scan.flags.like(f"%{RETIRED_FLAG}%"))):
-        flags = [f for f in (scan.flags or "").split(",") if f and f != RETIRED_FLAG]
-        notes = [n for n in (scan.message or "").split("; ") if n and n != _RETIRED_NOTE]
+    retired = or_(*(Scan.flags.like(f"%{flag}%") for flag in RETIRED_CHECKS))
+    for scan in db.scalars(select(Scan).where(Scan.result == "WARN", retired)):
+        flags = [f for f in (scan.flags or "").split(",") if f and f not in RETIRED_CHECKS]
+        notes = [n for n in (scan.message or "").split("; ") if n and n not in RETIRED_CHECKS.values()]
         scan.flags = ",".join(flags)
         if flags:
             scan.message = "; ".join(notes)[:300]

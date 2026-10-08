@@ -1006,7 +1006,8 @@ def prune_orders() -> int:
     """Keep RETAIN_ORDERS_DAYS of orders (by AWB generation date) for unscanned working-set orders.
     Orders that were SCANNED are preserved for long-term history in PostgreSQL (SCANNED_ORDERS_RETENTION_DAYS,
     default 550 days / ~1.5 years) so all scanned order relations, buyer information, and items remain queryable.
-    Orders still Packed / Ready-to-ship are always kept as pending."""
+    Orders still Packed / Ready-to-ship are always kept, and so is every other unscanned AWB that still counts as
+    pending (not cancelled / returned, AWB on or after the tracking start date)."""
     import json as _json
 
     from ..models import Scan
@@ -1024,11 +1025,21 @@ def prune_orders() -> int:
             (Scan.order_id == OmsOrder.id) | (Scan.tracking_norm == OmsOrder.tracking_norm)
         )
 
+        # Pending until scanned (user, 8 Oct 2026): an unscanned AWB that is not cancelled / returned stays - even
+        # when OMS shows it shipped - for as long as it is counted (AWB on or after the admin's "count orders from"
+        # date). Only a scan, a cancellation or moving that date forward lets it go.
+        awb_at = func.coalesce(OmsOrder.awb_generated_at, OmsOrder.first_seen_at)
+        still_pending = (OmsOrder.tracking_norm != "") & OmsOrder.status_group.notin_(("CANCELLED", "RETURN"))
+        counted_from = tracking.start_utc()
+        if counted_from is not None:
+            still_pending = still_pending & (awb_at >= counted_from)
+
         unscanned_doomed = (
             OmsOrder.status_group.notin_(WORKING_SET)
             & ~is_scanned
+            & ~still_pending
             & (
-                (func.coalesce(OmsOrder.awb_generated_at, OmsOrder.first_seen_at) < cutoff_working_set)
+                (awb_at < cutoff_working_set)
                 | ((OmsOrder.tracking_norm == "") & (OmsOrder.synced_at < now - timedelta(days=1)))
             )
         )
@@ -1036,7 +1047,7 @@ def prune_orders() -> int:
         scanned_doomed = (
             OmsOrder.status_group.notin_(WORKING_SET)
             & is_scanned
-            & (func.coalesce(OmsOrder.awb_generated_at, OmsOrder.first_seen_at) < cutoff_scanned)
+            & (awb_at < cutoff_scanned)
         )
 
         doomed = list(db.scalars(

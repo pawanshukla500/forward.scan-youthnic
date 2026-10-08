@@ -13,7 +13,8 @@ from app.main import app
 from app.models import OmsOrder, Scan
 from app.oms import sync as sm
 from app.oms.mock import MOCK_CHANNELS
-from app.timeutil import utcnow
+from app.services import tracking
+from app.timeutil import today_dispatch_date, utcnow
 
 
 def _row(awb: str, order_id: str, status: str, ch: int = 0, sub: str = "", invoice_age_s: int = 60) -> dict:
@@ -113,15 +114,25 @@ def test_order_leaving_ready_to_ship_stops_syncing_and_ages_out_scans_keep_detai
     assert _get("WSUNSCANNED1") is not None
 
     # AWB older than 7 days (retain_orders_days):
-    # Unscanned order is removed; still-open one stays (pending);
-    # Scanned order is PRESERVED for long-term history (scanned_orders_retention_days = 550d / 1.5y)
+    # the unscanned one is still pending (OMS moved it, nobody scanned it) - it is never aged out while it counts;
+    # still-open one stays (pending); scanned order PRESERVED for history (scanned_orders_retention_days = 1.5y)
     with session_scope() as db:
         old = utcnow() - timedelta(days=sm.settings.retain_orders_days, hours=1)
         db.get(OmsOrder, left.id).awb_generated_at = old
         db.get(OmsOrder, unscanned.id).awb_generated_at = old
         db.get(OmsOrder, _get("WSKEEP0001").id).awb_generated_at = old
-    assert sm.prune_orders() >= 1
-    # Unscanned order removed, pending order kept, scanned order KEPT!
+    sm.prune_orders()
+    assert _get("WSUNSCANNED1") is not None
+    assert _get("WSKEEP0001") is not None
+    assert _get("WSLEFT0001") is not None
+
+    # Moving the admin's "count orders from" date past it is what lets an unscanned AWB go
+    prev = tracking.start_date()
+    tracking.set_start(today_dispatch_date())
+    try:
+        assert sm.prune_orders() >= 1
+    finally:
+        tracking.set_start(prev)
     assert _get("WSUNSCANNED1") is None
     assert _get("WSKEEP0001") is not None
     assert _get("WSLEFT0001") is not None

@@ -199,6 +199,7 @@ def _scan_context(db: Session, channel: Channel, limit: int) -> dict:
     counts = {"generated": len(today_recs), "scanned": 0, "pending": 0, "left_unscanned": 0, "cancelled": 0}
     for r in today_recs:
         counts[r.bucket()] += 1
+        counts["left_unscanned"] += r.shipped_in_oms  # info: part of pending
     earlier = reconcile.collect(db, end=start, channel_id=channel_id, pending_only=True)
     counts["overdue"] = len(earlier)
     base = counts["generated"] - counts["cancelled"]

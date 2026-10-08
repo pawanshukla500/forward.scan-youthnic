@@ -1,4 +1,5 @@
-"""AWBs generated vs scanned, per channel: pending today, overdue, left without scan, cancelled after AWB."""
+"""AWBs generated vs scanned, per channel: pending today, overdue, cancelled after AWB. An AWB stays pending until it
+is scanned here, also when OMS already shows it shipped (counted in pending, and as "left_unscanned" for information)."""
 import asyncio
 import time
 
@@ -48,7 +49,7 @@ def test_reconciliation_buckets(env):
     eng._apply_rows([
         _row("RECPEND001", "ODREC1", "Ready to ship"),                         # due today, not scanned
         _row("RECSCAN001", "ODREC2", "Ready to ship"),                         # will be scanned
-        _row("RECLEFT001", "ODREC3", "In Transit"),                            # OMS shipped it, never scanned
+        _row("RECLEFT001", "ODREC3", "In Transit"),                            # OMS shipped it, never scanned: pending
         _row("RECCANC001", "ODREC4", "Cancelled Before Shipping"),             # cancelled after AWB
         _row("RECOVER001", "ODREC5", "Ready to ship", invoice_age_s=2 * 86400),  # AWB 2 days ago, still waiting
     ], "invoices")
@@ -62,10 +63,12 @@ def test_reconciliation_buckets(env):
 
     after = _ch(c.get("/api/reconciliation").json())
     delta = {k: after[k] - before[k] for k in ("generated", "scanned", "pending", "overdue", "left_unscanned", "cancelled")}
-    assert delta == {"generated": 4, "scanned": 1, "pending": 1, "overdue": 1, "left_unscanned": 1, "cancelled": 1}
+    # pending = RECPEND001 + RECLEFT001 (OMS says In Transit, but nobody scanned it); left_unscanned is part of it
+    assert delta == {"generated": 4, "scanned": 1, "pending": 2, "overdue": 1, "left_unscanned": 1, "cancelled": 1}
 
     pend = c.get("/api/reconciliation/list", params={"bucket": "pending", "channel_id": CH_ID}).json()["rows"]
-    assert "RECPEND001" in {r["awb"] for r in pend}
+    assert {"RECPEND001", "RECLEFT001"} <= {r["awb"] for r in pend}
+    assert next(r for r in pend if r["awb"] == "RECLEFT001")["shipped_in_oms"] is True
     over = c.get("/api/reconciliation/list", params={"bucket": "overdue", "channel_id": CH_ID}).json()["rows"]
     row = next(r for r in over if r["awb"] == "RECOVER001")
     assert row["bucket"] == "overdue" and row["age_days"] == 2
@@ -80,6 +83,19 @@ def test_reconciliation_buckets(env):
     chans = c.get("/api/channels").json()["channels"]
     mine = next(ch for ch in chans if ch["id"] == CH_ID)
     assert mine["awb_today"]["generated"] >= 4 and mine["awb_today"]["overdue"] >= 1
+
+    # the scan station's queue (web + phone Pending list) holds the shipped-but-unscanned AWB too ...
+    ctx = c.get("/api/scan-context", params={"channel_id": CH_ID, "limit": 50}).json()
+    assert "RECLEFT001" in {q["awb"] for q in ctx["queue"]}
+    # ... until it is scanned: then it scans OK and leaves pending
+    eng.client.busy = True
+    try:
+        res = c.post("/api/scan", json={"channel_id": CH_ID, "tracking": "RECLEFT001"}).json()
+    finally:
+        eng.client.busy = False
+    assert res["severity"] == "success", res
+    again = _ch(c.get("/api/reconciliation").json())
+    assert again["pending"] == after["pending"] - 1 and again["left_unscanned"] == after["left_unscanned"] - 1
 
 
 def test_channel_summary_day_and_month(env):

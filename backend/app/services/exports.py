@@ -191,7 +191,7 @@ def oms_dispatch_csv(scans: Iterable[Scan]) -> str:
 
 BUCKET_LABELS = {
     "pending": "Pending (due today)", "overdue": "Overdue (AWB from an earlier day)",
-    "left_unscanned": "Left Ready-to-ship in OMS without a scan", "cancelled": "Cancelled / returned after AWB",
+    "left_unscanned": "Pending - OMS already shows it shipped, not scanned", "cancelled": "Cancelled / returned after AWB",
     "scanned": "Scanned", "generated": "All AWBs generated",
 }
 
@@ -227,7 +227,7 @@ def reconcile_xlsx(rows: list[dict], title: str, summary: dict | None = None) ->
     _style_sheet(ws, [w for _, w in cols], header_row)
     if summary:
         s2 = wb.create_sheet("By channel")
-        head = ["Sales Channel", "AWBs generated", "Scanned", "Pending", "Overdue", "Left RTS without scan", "Cancelled", "Scanned %"]
+        head = ["Sales Channel", "AWBs generated", "Scanned", "Pending", "Overdue", "Of pending: shipped in OMS", "Cancelled", "Scanned %"]
         s2.append(head)
         for ch in summary.get("channels", []):
             s2.append([ch["name"], ch["generated"], ch["scanned"], ch["pending"], ch["overdue"], ch["left_unscanned"],
