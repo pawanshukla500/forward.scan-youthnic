@@ -28,7 +28,11 @@ from ..timeutil import day_bounds_utc, dispatch_date_for, iso_utc, to_local, tod
 from . import cache, tracking
 
 BUCKETS = ("pending", "overdue", "left_unscanned", "cancelled", "scanned", "generated")
-_RANK = {"OPEN": 0, "NOT_PACKED": 1, "PARTIAL_CANCEL": 2, "UNKNOWN": 3, "MOVED": 4, "SHIPPED": 5, "RETURN": 6, "CANCELLED": 7}
+_RANK = {"OPEN": 0, "NOT_PACKED": 1, "PARTIAL_CANCEL": 2, "UNKNOWN": 3, "MOVED": 4, "SHIPPED": 5, "RETURN": 6, "CANCELLED": 7,
+         "REPLACED": 8}
+# An AWB OMSGuru replaced with a new one (courier reassigned / label re-made, never scanned): not a shipment any
+# more - not generated, not pending (sync._retire_replaced_awbs). The new AWB is the one counted.
+NOT_A_SHIPMENT = ("REPLACED",)
 
 
 # Statuses that are NOT pending (see AwbRec.bucket); used to push the "pending" filter into SQL.
@@ -75,7 +79,7 @@ def collect(db: Session, *, start: datetime | None = None, end: datetime | None 
         select(OmsOrder.id, OmsOrder.tracking_norm, OmsOrder.channel_id, OmsOrder.status_group,
                OmsOrder.awb_generated_at, OmsOrder.sla_date, Scan.id, Scan.flags)
         .outerjoin(Scan, Scan.tracking_norm == OmsOrder.tracking_norm)
-        .where(OmsOrder.tracking_norm != "")
+        .where(OmsOrder.tracking_norm != "", OmsOrder.status_group.notin_(NOT_A_SHIPMENT))
     )
     if start is not None:
         q = q.where(OmsOrder.awb_generated_at >= start)
@@ -187,7 +191,8 @@ def trail_check(db: Session, day: date, chans: dict[int, Channel]) -> dict[str, 
         ch = chans.get(int(cid)) if cid not in ("0", "") else None
         out.append({"id": int(cid) if cid not in ("0", "") else None, "name": ch.name if ch else "Unmapped channel", **c})
     out.sort(key=lambda x: (-x["oms"], x["name"]))
-    return {k: t.get(k) for k in ("checked_at", "complete", "oms", "app", "added")} | {"channels": out}
+    return ({k: t.get(k) for k in ("checked_at", "complete", "oms", "app", "added")}
+            | {"extra": t.get("extra") or 0, "extra_awbs": t.get("extra_awbs") or [], "channels": out})
 
 
 def summary_cached(db: Session, day: date) -> dict[str, Any]:

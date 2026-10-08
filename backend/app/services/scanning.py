@@ -46,6 +46,11 @@ def evaluate(orders: list[OmsOrder], selected_channel_id: int, channels: dict[in
         return Verdict("BLOCK", ["WRONG_CHANNEL"], f"WRONG MARKETPLACE - this shipment belongs to {name}", "WRONG_CHANNEL")
 
     groups = {o.status_group for o in orders}
+    if groups <= {"REPLACED"}:
+        newer = (orders[0].status_text or "").removeprefix("AWB replaced by").strip()
+        return Verdict("BLOCK", ["REPLACED"], "OLD LABEL - OMSGuru replaced this AWB"
+                       + (f" with {newer}" if newer else "") + ": print the new label and scan that", "BLOCKED")
+    groups -= {"REPLACED"}
     if groups <= {"CANCELLED"}:
         return Verdict("BLOCK", ["CANCELLED"], "ORDER CANCELLED in OMS - do NOT dispatch, keep aside", "BLOCKED")
     if "RETURN" in groups:
@@ -302,7 +307,20 @@ def _is_marked(scan: Scan | None) -> bool:
     return bool(scan is not None and MARKED_SHIPPED_FLAG in (scan.flags or "").split(","))
 
 
+# A scan of the same AWB by the same packer in the same channel within this many seconds is their own scan
+# repeated (no answer in time / not sure it beeped): answered "already saved", not "DUPLICATE - set aside".
+REPEAT_SECONDS = 120
+
+
 def _duplicate_response(db: Session, existing: Scan, user: User, station: str, channel_id: int, raw: str) -> dict:
+    if (existing.user_id == user.id and existing.channel_id == channel_id
+            and (utcnow() - existing.scanned_at).total_seconds() < REPEAT_SECONDS):
+        msg = f"Already saved - your own scan at {to_local(existing.scanned_at):%H:%M:%S}. Put it with the dispatch."
+        _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=existing.tracking_norm,
+               outcome="REPEAT", message=msg, scan_id=existing.id)
+        db.commit()
+        return {"severity": "success", "code": "ALREADY_SAVED", "message": msg, "scan": scan_payload(existing),
+                "order": order_payload(existing.order)}
     when = to_local(existing.scanned_at).strftime("%d-%b-%Y %H:%M")
     who = (existing.user.full_name or existing.user.username) if existing.user else "?"
     ch = existing.channel.name if existing.channel else ""

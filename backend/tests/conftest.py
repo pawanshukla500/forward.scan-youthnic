@@ -23,3 +23,14 @@ os.environ["APP_RELEASE_DIR"] = (_tmp / "app").as_posix()  # where the APK workf
 os.environ["PUBLIC_URL"] = ""
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_repeat_window(monkeypatch):
+    """Most tests scan the same AWB again at once to check "DUPLICATE"; the own-repeat window (same packer,
+    same channel, within REPEAT_SECONDS = "already saved") is tested on its own in test_review_fixes.py."""
+    from app.services import scanning
+
+    monkeypatch.setattr(scanning, "REPEAT_SECONDS", 0)

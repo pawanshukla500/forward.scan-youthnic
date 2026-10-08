@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -145,6 +146,10 @@ def health():
         raise HTTPException(status_code=503, detail="Database connectivity failure") from exc
 
     backend_type = "sqlite" if settings.database_url.startswith("sqlite") else "postgresql"
+    eng = sync_module.engine_instance
+    # Seconds since the sync scheduler last turned its loop (None = sync off). It turns every few seconds even
+    # while OMSGuru is down, so a large value means the loop itself is stuck: the server watchdog restarts the app.
+    loop_age = round(time.monotonic() - eng.heartbeat, 1) if eng is not None else None
     return {
         "ok": True,
         "database_backend": backend_type,
@@ -152,6 +157,7 @@ def health():
         "mode": "mock" if settings.oms_use_mock else "live",
         "ws_clients": hub.count,
         "started_at": STARTED_AT,
+        "sync_loop_age_s": loop_age,
     }
 
 

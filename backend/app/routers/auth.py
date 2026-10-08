@@ -6,7 +6,7 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -51,6 +51,9 @@ def user_payload(u: User) -> dict:
 
 def _throttle(key: str) -> list[float]:
     now = time.time()
+    if len(_failures) > 5000:  # forget expired entries (random user names would otherwise pile up forever)
+        for k in [k for k, ts in _failures.items() if not ts or now - ts[-1] >= FAILURE_WINDOW]:
+            _failures.pop(k, None)
     recent = [t for t in _failures.get(key, []) if now - t < FAILURE_WINDOW]
     if len(recent) >= MAX_FAILURES:
         raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
@@ -180,15 +183,42 @@ def mobile_login(body: MobileLoginIn, request: Request, db: Session = Depends(ge
     }
 
 
+def _revoke_chain(db: Session, session_id: int | None, now) -> None:
+    """Revoke a session and every session that replaced it (rotation chain)."""
+    seen: set[int] = set()
+    while session_id and session_id not in seen:
+        seen.add(session_id)
+        s = db.get(MobileDeviceSession, session_id)
+        if s is None:
+            break
+        if s.revoked_at is None:
+            s.revoked_at = now
+        session_id = s.replaced_by_id
+
+
 @router.post("/mobile/refresh")
 def mobile_refresh(body: MobileRefreshIn, db: Session = Depends(get_db)):
-    """Exchange a valid mobile refresh token for a fresh access token and rotate the refresh token."""
+    """Exchange a valid mobile refresh token for a fresh access token and rotate the refresh token.
+
+    Rotated tokens: if the phone never received the answer (timeout, app killed) it still holds the old token. That
+    old token is accepted once more as long as the token that replaced it was never used - the phone is not signed
+    out mid-shift. An old token coming back AFTER its replacement was used means a copy is around: that whole sign-in
+    chain is ended (sign in again)."""
     thash = hash_refresh_token(body.refresh_token)
     session = db.scalar(select(MobileDeviceSession).where(MobileDeviceSession.token_hash == thash))
-    if not session or session.revoked_at is not None:
+    if not session:
         raise HTTPException(401, "Session is invalid or has been revoked")
-
     now = utcnow()
+    nxt = None  # set = the answer of an earlier renewal was lost: its unused new token is replaced again
+    if session.revoked_at is not None:
+        nxt = db.get(MobileDeviceSession, session.replaced_by_id) if session.replaced_by_id else None
+        if nxt is None:
+            raise HTTPException(401, "Session is invalid or has been revoked")  # signed out / disabled
+        if nxt.revoked_at is not None or nxt.replaced_by_id is not None:
+            _revoke_chain(db, nxt.id, now)
+            db.commit()
+            raise HTTPException(401, "This sign-in was renewed on another device. Please sign in again.")
+
     if session.expires_at <= now:
         raise HTTPException(401, "Refresh session has expired. Please sign in again.")
 
@@ -203,10 +233,6 @@ def mobile_refresh(body: MobileRefreshIn, db: Session = Depends(get_db)):
         db.commit()
         raise HTTPException(401, "Password has changed or session was invalidated. Please sign in again.")
 
-    # Rotate refresh token: revoke previous session, issue new one
-    session.revoked_at = now
-    session.last_used_at = now
-
     new_raw_refresh = generate_refresh_token()
     new_session = MobileDeviceSession(
         user_id=user.id,
@@ -218,6 +244,19 @@ def mobile_refresh(body: MobileRefreshIn, db: Session = Depends(get_db)):
         last_used_at=now,
     )
     db.add(new_session)
+    db.flush()
+    if nxt is not None:
+        # one live token per sign-in: the never-delivered one is retired and points at the new one
+        nxt.revoked_at = now
+        nxt.replaced_by_id = new_session.id
+        session.replaced_by_id = new_session.id
+        session.last_used_at = now
+    else:
+        # Rotate atomically: only one request turns this token into "replaced".
+        db.execute(update(MobileDeviceSession)
+                   .where(MobileDeviceSession.id == session.id, MobileDeviceSession.revoked_at.is_(None))
+                   .values(revoked_at=now, last_used_at=now, replaced_by_id=new_session.id)
+                   .execution_options(synchronize_session=False))
     db.commit()
 
     token = issue_token(user)

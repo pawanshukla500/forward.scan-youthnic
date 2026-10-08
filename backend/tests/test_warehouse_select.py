@@ -1,9 +1,25 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.db import session_scope
 from app.main import app
 from app.models import OmsOrder, Warehouse
 from app.oms import sync as sm
+
+
+@pytest.fixture(autouse=True)
+def _restore_warehouses():
+    """These tests rewrite the warehouse list; later tests sync mock orders of the original warehouses (new invoice
+    rows of a warehouse not synced here are skipped), so the list is put back afterwards."""
+    with session_scope() as db:
+        saved = [(w.id, w.name, w.alias, w.sync_enabled) for w in db.query(Warehouse)]
+    mode = sm._get_state("warehouses_mode")
+    yield
+    with session_scope() as db:
+        db.query(OmsOrder).filter(OmsOrder.oms_key.like("wh-%")).delete(synchronize_session=False)
+        db.query(Warehouse).delete()
+        db.add_all([Warehouse(id=i, name=n, alias=a, sync_enabled=e) for i, n, a, e in saved])
+    sm._set_state("warehouses_mode", mode)
 
 
 def test_auto_select_syncs_only_the_dispatch_warehouse():

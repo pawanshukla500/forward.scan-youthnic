@@ -63,7 +63,12 @@ def ensure_columns() -> list[str]:
                 default = ""
                 if col.default is not None and getattr(col.default, "is_scalar", False):
                     val = col.default.arg
-                    default = f" DEFAULT '{val}'" if isinstance(val, str) else f" DEFAULT {int(val)}"
+                    if isinstance(val, bool):  # PostgreSQL refuses DEFAULT 1 on a BOOLEAN column
+                        default = f" DEFAULT {'TRUE' if val else 'FALSE'}"
+                    elif isinstance(val, str):
+                        default = " DEFAULT '{}'".format(val.replace("'", "''"))
+                    elif isinstance(val, (int, float)):
+                        default = f" DEFAULT {val}"
                 conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ddl_type}{default}'))
                 added.append(f"{table.name}.{col.name}")
             for idx in table.indexes:

@@ -49,6 +49,7 @@ users with roles (scanner / supervisor / manager / admin).
 | An order that **leaves** Packed / Ready-to-ship (shipped, in transit, cancelled, returned) | No longer synced - last known status kept | Until its AWB is 7 days old |
 | Orders **cancelled before an AWB existed** | Never | Never stored |
 | **Scans** (per sales channel, with a copy of the order details) | - | `SCAN_RETENTION_DAYS` from the scan date (default 1095 = 3 years; 0 = forever) |
+| Orders that were **scanned** (buyer, items, status) | - | `SCANNED_ORDERS_RETENTION_DAYS` (550; 0 = forever) |
 
 On first start the app loads today's AWBs and all Ready-to-ship orders straight away, then fills the previous
 6 days in the background using only spare API credits. The clean-up runs every 15 minutes and needs no API calls.
@@ -97,7 +98,10 @@ scanned, they are just not counted. The Pending page shows the date in use.
 | Check | When | What it does |
 |---|---|---|
 | **Cross-check with OMSGuru** | After every Packed + Ready-to-ship refresh (2 API calls) | Compares OMSGuru's own pending report (`order_aging`) with the local copy, per sales channel, for orders of the last `ORDER_LOOKBACK_DAYS`. A gap of more than 2 orders (or 1 %) triggers one early re-refresh; if it is still there, *Admin* turns red. The Pending page shows "match OMSGuru - checked HH:MM". |
-| **Exit check** | Spare API credits only | An order that leaves Ready-to-ship **without a scan** is looked up once in OMSGuru, so *Left RTS, not scanned* holds real misses (shipped / in transit) and late cancellations move to *Cancelled after AWB*. |
+| **Exit check** | Spare API credits only | An order that leaves Ready-to-ship **without a scan** is looked up in OMSGuru, and again every 12 h while it stays pending (up to `PENDING_KEEP_DAYS`), so a cancellation or return that comes days later still moves it to *Cancelled after AWB*. |
+| **Order-trail audit** | Hourly on spare credits; once a night (after 03:00) the last 7 days | Re-reads OMSGuru's whole invoice list for today and yesterday and compares it AWB by AWB with the app, both ways: an AWB the live sync missed is added (and counts as pending), an unscanned AWB here that OMSGuru does not list is reported. The Pending page shows "Order trail complete: all N AWBs OMSGuru made on this day are here". After a database restore the 7-day round runs at once. |
+| **Re-made labels** | Every sync | When OMSGuru gives a shipment a new AWB (same order and sub-order), the old, never-scanned AWB stops counting (status *AWB replaced*) and scanning the old label is refused: "OLD LABEL - print the new label". |
+| **Sync heartbeat** | Always | `/api/health` reports `sync_loop_age_s`; the server's watchdog restarts the app when the sync loop or the health check stops answering. |
 | **Refresh order** | Every refresh | Packed is read before Ready-to-ship (the direction orders move), so an order marked RTS while the refresh runs is never wrongly counted as "left". |
 
 Packed / Ready-to-ship orders older than `ORDER_LOOKBACK_DAYS` (15) are not tracked. On 2 Oct 2026 that was 37 Shopify
