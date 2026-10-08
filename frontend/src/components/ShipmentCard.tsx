@@ -34,6 +34,8 @@ export const CODE_TITLE: Record<string, string> = {
   AMBIGUOUS: "Scan the AWB barcode",
   ALERT: "Stop - order changed in OMS",
   FLAGGED: "Flagged for review",
+  ALREADY_SAVED: "Already saved - your own scan a moment ago",
+  REPLACED: "Old label - OMSGuru replaced this AWB",
 };
 
 /** What a scan result means on the floor: one colour and one sound per kind (see sound.ts). */

@@ -222,6 +222,7 @@ def _scan_context(db: Session, channel: Channel, limit: int) -> dict:
             "skus": len({i.get("sku") for i in items}), "units": sum(int(i.get("qty") or 0) for i in items),
             "sla_date": o.get("sla_date"), "awb_generated_at": row["awb_generated_at"], "age_days": row["age_days"],
             "priority": _priority(sla_dt, row["age_days"]),
+            "shipped_in_oms": row["shipped_in_oms"],
         })
     by_courier: dict[str, int] = {}
     if waiting:

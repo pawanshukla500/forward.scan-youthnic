@@ -143,6 +143,22 @@ def apply_recent_postgres(engine, recent: Path) -> str:
     return since
 
 
+def reset_sync_after_restore(url: str) -> None:
+    """The database is back at the backup's time: forget half-done sync rounds and have the first start re-check
+    OMSGuru's last days in full (deep order-trail audit), so nothing made between the backup and now is missed."""
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(url)
+    try:
+        with engine.begin() as c:
+            c.execute(text("DELETE FROM sync_state WHERE key IN ('trail_audit_progress', 'open_orders_progress', "
+                           "'trail_audit_last_done', 'trail_audit_deep_on', 'trail_audit_force_deep')"))
+            c.execute(text("INSERT INTO sync_state (key, value, updated_at) VALUES ('trail_audit_force_deep', 'true', "
+                           "CURRENT_TIMESTAMP)"))
+    finally:
+        engine.dispose()
+
+
 def restore_postgres(full: Path, recent: Path | None, url: str | None = None, safety_dump: bool = True) -> dict:
     """Safety pg_dump of the current database, pg_restore --clean of [full], then merge [recent].
     [safety_dump] False: for a database too damaged for pg_dump (--skip-safety-dump)."""
@@ -181,6 +197,7 @@ def restore_postgres(full: Path, recent: Path | None, url: str | None = None, sa
             scans = c.execute(text("SELECT count(*) FROM scans")).scalar_one()
     finally:
         engine.dispose()
+    reset_sync_after_restore(url)
     if since:
         print(f"Merged recent scans since {since}")
     print(f"Restored {full.name}: {scans:,} scans. Start the server again (docker start Forward-Scan).")
@@ -261,6 +278,7 @@ def main() -> None:
             shutil.move(str(f), incident / f.name)
     print(f"Moved the current database files to {incident}")
     part.replace(target)
+    reset_sync_after_restore(f"sqlite:///{target}")
     print(f"Restored: quick_check ok, {scans:,} scans. Start the server again (run.bat).")
 
 

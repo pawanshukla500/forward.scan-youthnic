@@ -31,6 +31,9 @@ interface Summary {
     oms: number;
     app: number;
     added: number;
+    /** unscanned AWBs counted here that OMSGuru's invoice list for the day does not contain */
+    extra: number;
+    extra_awbs: string[];
     channels: { id: number | null; name: string; oms: number; app: number; added: number }[];
   } | null;
 }
@@ -61,6 +64,7 @@ const BUCKETS = [
 const OMS_STATUS: Record<string, string> = {
   OPEN: "Ready to ship", NOT_PACKED: "Not packed", PARTIAL_CANCEL: "Partly cancelled", MOVED: "Left Ready-to-ship",
   SHIPPED: "Shipped / in transit", CANCELLED: "Cancelled", RETURN: "Return", UNKNOWN: "Unknown",
+  REPLACED: "AWB replaced (new label)",
 };
 
 function dayLabel(iso: string, today: string) {
@@ -88,15 +92,22 @@ function OmsCheck({ c }: { c: NonNullable<Summary["oms_check"]> }) {
 function TrailCheck({ t }: { t: NonNullable<Summary["trail"]> }) {
   const at = new Date(t.checked_at * 1000).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
   const off = t.channels.filter((c) => c.oms !== c.app);
+  const n = (v: number) => v.toLocaleString("en-IN");
+  const problems = [
+    off.length > 0 &&
+      `${n(t.app)} of ${n(t.oms)} OMSGuru AWBs are here (${off.map((c) => `${c.name} ${c.app}/${c.oms}`).join(", ")})`,
+    t.extra > 0 &&
+      `${n(t.extra)} pending AWB${t.extra === 1 ? " is" : "s are"} not in OMSGuru's list (${t.extra_awbs.slice(0, 3).join(", ")}${
+        t.extra > 3 ? " ..." : ""
+      })`,
+  ].filter(Boolean);
   return (
     <span className={cx("mt-1 flex items-start gap-1.5 text-sm font-medium", t.complete ? "text-good-ink" : "text-crit-ink")}>
       {t.complete ? <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden /> : <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />}
       <span>
         {t.complete
           ? `Order trail complete: all ${t.oms.toLocaleString("en-IN")} AWBs OMSGuru made on this day are here - checked ${at}`
-          : `Order trail check at ${at}: ${t.app.toLocaleString("en-IN")} of ${t.oms.toLocaleString("en-IN")} OMSGuru AWBs are here (${off
-              .map((c) => `${c.name} ${c.app}/${c.oms}`)
-              .join(", ")}) - see Admin > OMSGuru sync`}
+          : `Order trail check at ${at}: ${problems.join("; ")} - see Admin > OMSGuru sync`}
         {t.added > 0 && <span className="font-normal text-muted"> · {t.added.toLocaleString("en-IN")} missed by the live sync were added by the check</span>}
       </span>
     </span>

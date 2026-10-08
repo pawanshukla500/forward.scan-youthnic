@@ -62,6 +62,8 @@ class MobileDeviceSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     last_used_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # set when this refresh token was rotated: the session that replaced it (reuse detection / lost-answer grace)
+    replaced_by_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     user: Mapped[User] = relationship(lazy="joined")
 
@@ -158,6 +160,8 @@ class OmsOrder(Base):
     awb_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     # Last time OMSGuru was asked what an unscanned order became after it left Packed / Ready-to-ship.
     exit_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # last time the hourly order-trail audit saw this AWB in OMSGuru's own invoice list (sync.step_audit)
+    audit_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     channel: Mapped[Channel | None] = relationship(lazy="joined")
 

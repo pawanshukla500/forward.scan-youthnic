@@ -192,7 +192,9 @@ class OmsClient:
                 else:
                     if resp.status_code == 429 or _is_throttle_body(resp):
                         self._mark_throttled()
-                        if attempt >= max_attempts:
+                        if min_credits or attempt >= max_attempts:
+                            # spare-credit work (audit, exit check, history): the next tick decides again -
+                            # waiting here would hold up the new-AWB sync behind it
                             raise OmsThrottled("OMSGuru API throttled (rate limit shared with other integrations)")
                         retry_after = _int(resp.headers.get("retry-after"), 5)
                         retry_in = min(120.0, retry_after + REFILL_SECONDS * (2 ** min(attempt - 1, 4)) * random.uniform(0.5, 1.0))

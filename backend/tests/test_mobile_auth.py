@@ -97,13 +97,29 @@ def test_mobile_refresh_rotates_token():
         c.headers["Authorization"] = f"Bearer {data2['token']}"
         assert c.get("/api/auth/me").status_code == 200
 
-        # Old refresh token is revoked and cannot be used again
-        r_old = c.post("/api/auth/mobile/refresh", json={"refresh_token": orig_refresh})
-        assert r_old.status_code == 401
-
         # Second refresh with new token works
         r3 = c.post("/api/auth/mobile/refresh", json={"refresh_token": new_refresh})
         assert r3.status_code == 200
+
+        # The old refresh token, after its replacement was used, is a copy: refused, and the sign-in is ended
+        r_old = c.post("/api/auth/mobile/refresh", json={"refresh_token": orig_refresh})
+        assert r_old.status_code == 401
+        r4 = c.post("/api/auth/mobile/refresh", json={"refresh_token": r3.json()["refresh_token"]})
+        assert r4.status_code == 401
+
+
+def test_mobile_refresh_lost_answer_does_not_sign_out():
+    """The phone never got the renewal answer (timeout): it sends the old token again and stays signed in; the
+    token it never received is retired, so one sign-in keeps exactly one live token."""
+    with TestClient(app) as c:
+        r = c.post("/api/auth/mobile/login", json={"username": "admin", "password": ADMIN_PW, "device_info": "Phone B"})
+        t0 = r.json()["refresh_token"]
+        lost = c.post("/api/auth/mobile/refresh", json={"refresh_token": t0}).json()["refresh_token"]
+        again = c.post("/api/auth/mobile/refresh", json={"refresh_token": t0})
+        assert again.status_code == 200, again.text
+        t2 = again.json()["refresh_token"]
+        assert t2 not in (t0, lost)
+        assert c.post("/api/auth/mobile/refresh", json={"refresh_token": t2}).status_code == 200
 
 
 def test_mobile_expired_refresh_rejected():

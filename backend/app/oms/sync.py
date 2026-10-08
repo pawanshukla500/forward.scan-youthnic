@@ -70,6 +70,8 @@ PRUNE_BATCH = 2000
 # Exit check: orders looked up per run, and the pause when there is nothing to look up.
 EXIT_CHECK_BATCH = 10
 EXIT_CHECK_IDLE_SECONDS = 120
+# A pending AWB OMSGuru already shows shipped is asked about again this often (cancelled / returned later?).
+EXIT_RECHECK_HOURS = 12
 # A lookup method that missed this often for a channel, and never found anything, is skipped for it.
 LOOKUP_GIVE_UP = 3
 # Order-trail audit: every invoice of the last AUDIT_DAYS dispatch days, re-read every AUDIT_EVERY_SECONDS.
@@ -588,6 +590,7 @@ class SyncEngine:
         retain_from = now - timedelta(days=settings.retain_orders_days)
         with session_scope() as db:
             matcher = ChannelMatcher(db.scalars(select(Channel)))
+            mine = _dispatch_warehouses(db)
             sku_set: set[str] = set()
             for row in rows:
                 itms = row.get("order_items") or row.get("items") or []
@@ -635,10 +638,15 @@ class SyncEngine:
                               or (source == "invoices" and recent_awb))
                 if existing is None and not may_insert:
                     continue  # not dispatchable and not ours to track - don't store it
+                wh = str(row.get("warehouse") or "").strip().lower()
+                if existing is None and source == "invoices" and mine and wh and wh not in mine:
+                    continue  # Amazon FBA / marketplace fulfilment centre: ships itself, never pending here
                 stored += 1
                 if existing is None:
                     existing = OmsOrder(first_seen_at=now)
                     db.add(existing)
+                    if data["tracking_norm"]:
+                        _retire_replaced_awbs(db, data, now)
                 else:
                     # Never wipe a known AWB with a blank one from a later status row.
                     for keep in ("tracking_raw", "tracking_norm", "shipping_company", "invoice_id", "oms_key"):
@@ -648,8 +656,12 @@ class SyncEngine:
                         clash = db.scalar(select(OmsOrder.id).where(OmsOrder.oms_key == data["oms_key"]))
                         if clash:
                             data.pop("oms_key")
+                    # A replaced AWB stays retired when an old invoice row still carries it - unless OMSGuru shows it
+                    # open (Packed / Ready-to-ship) again, i.e. current, or cancelled / returned.
+                    if existing.status_group == "REPLACED" and                             data["status_group"] not in WORKING_SET + ("CANCELLED", "RETURN"):
+                        data["status_group"], data["status_text"] = existing.status_group, existing.status_text
                 for k, v in data.items():
-                    setattr(existing, k, v)
+                    setattr(existing, k, _fit(k, v))
                 existing.synced_at = now
                 if existing.tracking_norm and existing.awb_generated_at is None:
                     existing.awb_generated_at = existing.invoice_date or now
@@ -927,8 +939,9 @@ class SyncEngine:
             counted_from = await asyncio.to_thread(tracking.start_date)
             from ..timeutil import to_local
 
-            deep = (await _aget("trail_audit_deep_on") != today.isoformat()
-                    and to_local(utcnow()).hour >= AUDIT_DEEP_HOUR)
+            # after a database restore (restore_backup.py) the deep round runs at once, whatever the hour
+            deep = bool(await _aget("trail_audit_force_deep")) or (
+                await _aget("trail_audit_deep_on") != today.isoformat() and to_local(utcnow()).hour >= AUDIT_DEEP_HOUR)
             n_days = min(AUDIT_DEEP_DAYS, settings.retain_orders_days) if deep else AUDIT_DAYS
             wins = []
             for d in (today - timedelta(days=i) for i in range(n_days)):
@@ -942,6 +955,9 @@ class SyncEngine:
         if not st["windows"]:
             await _aset("trail_audit_progress", None)
             await _aset("trail_audit_last_done", time.time())
+            if st.get("deep"):
+                await _aset("trail_audit_deep_on", st.get("day"))
+                await _aset("trail_audit_force_deep", None)
             return "nothing to check (before the tracking start date)"
         start, end, label = st["windows"][0]
         rows = await self.client.list_invoices(start, min(end, int(time.time())), last_id=st["last_id"],
@@ -985,6 +1001,17 @@ class SyncEngine:
             await _aset("trail_audit_last_done", time.time())
             if st.get("deep"):
                 await _aset("trail_audit_deep_on", st.get("day"))
+                await _aset("trail_audit_force_deep", None)
+            # Nothing extra either: pending AWBs here (not Packed / Ready-to-ship - those are confirmed by the
+            # open-order refresh) that OMSGuru's list did not contain on ANY audited day.
+            extra = await asyncio.to_thread(_audit_extras, list(st["tally"]), st["started"])
+            result = await _aget("trail_audit") or {"days": {}}
+            for d, (n, sample) in extra.items():
+                if d in result["days"]:
+                    t = result["days"][d]
+                    t["extra"], t["extra_awbs"] = n, sample
+                    t["complete"] = t["complete"] and n == 0
+            await _aset("trail_audit", result)
         cache.clear()
         return (f"{label}: OMSGuru {done['oms']} AWBs, {done['app']} here"
                 + (f", {done['added']} missing AWBs added" if done["added"] else "")
@@ -996,8 +1023,7 @@ class SyncEngine:
         here count: Amazon FBA / marketplace fulfilment centres (DEL4, BLR8 ...) ship themselves and must never
         turn into "pending" here (7 Oct 2026: 92 FBA invoices in OMSGuru's list, rightly not in the app)."""
         with session_scope() as db:
-            mine = {(v or "").strip().lower() for w in db.scalars(select(Warehouse).where(Warehouse.sync_enabled.is_(True)))
-                    for v in (w.name, w.alias) if (v or "").strip()}
+            mine = _dispatch_warehouses(db)
         if mine:
             rows = [r for r in rows if str(r.get("warehouse") or "").strip().lower() in mine]
         parsed = {}
@@ -1012,6 +1038,7 @@ class SyncEngine:
         self._apply_rows(rows, "invoices")
         with session_scope() as db:
             after = set(db.scalars(select(OmsOrder.tracking_norm).where(OmsOrder.tracking_norm.in_(list(parsed)))))
+            db.execute(update(OmsOrder).where(OmsOrder.tracking_norm.in_(list(parsed))).values(audit_seen_at=utcnow()))
             matcher = ChannelMatcher(db.scalars(select(Channel)))
             oms, here, added = Counter(), Counter(), Counter()
             for awb, d in parsed.items():
@@ -1111,6 +1138,74 @@ def _store_sku_photos(listings: list[dict], marketplace: str) -> int:
     return stored
 
 
+def _dispatch_warehouses(db) -> set[str]:
+    """Names / aliases (lower case) of the warehouses synced here; empty = not decided yet (accept all)."""
+    return {(v or "").strip().lower() for w in db.scalars(select(Warehouse).where(Warehouse.sync_enabled.is_(True)))
+            for v in (w.name, w.alias) if (v or "").strip()}
+
+
+def _audit_extras(days: list[str], started: float) -> dict[str, tuple[int, list[str]]]:
+    """Per audited day (invoice date, like OMSGuru's list): unscanned, still-pending AWBs here that the audit round
+    did NOT see in OMSGuru's invoice list - counted here as pending although OMSGuru does not list them."""
+    from datetime import date as _date
+
+    from ..timeutil import from_unix
+
+    since = from_unix(int(started))
+    settled = since - timedelta(minutes=10)  # invoiced while the round ran: not in the pages already read
+    out: dict[str, tuple[int, list[str]]] = {}
+    with session_scope() as db:
+        mine = _dispatch_warehouses(db)
+        for d in days:
+            a, b = day_bounds_utc(_date.fromisoformat(d))
+            q = (select(OmsOrder.tracking_norm)
+                 .where(OmsOrder.tracking_norm != "", OmsOrder.invoice_date >= a, OmsOrder.invoice_date < b,
+                        OmsOrder.invoice_date < settled,
+                        OmsOrder.status_group.notin_(("OPEN", "CANCELLED", "RETURN", "REPLACED")),
+                        ~exists().where(Scan.tracking_norm == OmsOrder.tracking_norm),
+                        (OmsOrder.audit_seen_at.is_(None)) | (OmsOrder.audit_seen_at < since)))
+            if mine:
+                q = q.where(func.lower(OmsOrder.warehouse).in_(mine))
+            awbs = sorted(set(db.scalars(q)))
+            out[d] = (len(awbs), awbs[:10])
+    return out
+
+
+def _retire_replaced_awbs(db, data: dict, now) -> int:
+    """A new AWB for a shipment we already have under another AWB (courier reassigned, label re-made): the old
+    AWB is no longer a shipment. If it was never scanned it becomes REPLACED - out of generated / pending, and
+    scanning the old label is refused. Same channel + order id + overlapping sub-orders only, so the separate
+    shipments of a multi-shipment order (different sub-orders) are never touched."""
+    subs = {x for x in (data.get("sub_order_ids") or "").split(",") if x}
+    if not data["channel_order_id"] or not subs:
+        return 0
+    n = 0
+    for old in db.scalars(select(OmsOrder).where(
+            OmsOrder.channel_order_id == data["channel_order_id"], OmsOrder.channel_label == data["channel_label"],
+            OmsOrder.tracking_norm != "", OmsOrder.tracking_norm != data["tracking_norm"],
+            OmsOrder.status_group.notin_(("CANCELLED", "RETURN", "REPLACED")))):
+        if not subs & {x for x in (old.sub_order_ids or "").split(",") if x}:
+            continue
+        if db.scalar(select(Scan.id).where(Scan.tracking_norm == old.tracking_norm).limit(1)):
+            continue  # it went out under the old label: keep that history
+        old.status_group = "REPLACED"
+        old.status_text = f"AWB replaced by {data['tracking_norm']}"[:120]
+        old.left_at = old.left_at or now
+        n += 1
+    return n
+
+
+_LIMITS = {c.name: c.type.length for c in OmsOrder.__table__.columns
+           if getattr(c.type, "length", None) and isinstance(c.type.length, int)}
+
+
+def _fit(column: str, value: Any) -> Any:
+    """Cut a text value to its column length: PostgreSQL rejects (and rolls back the whole sync page for) a
+    buyer name / warehouse / title longer than the column, where SQLite just stored it."""
+    limit = _LIMITS.get(column)
+    return value[:limit] if limit and isinstance(value, str) and len(value) > limit else value
+
+
 def _find_existing(db, data: dict) -> OmsOrder | None:
     """The working-set row this API row describes (same shipment), if any."""
     existing = db.scalar(select(OmsOrder).where(OmsOrder.oms_key == data["oms_key"]))
@@ -1179,6 +1274,7 @@ def prune_orders() -> int:
             OmsOrder.status_group.notin_(WORKING_SET)
             & is_scanned
             & (awb_at < cutoff_scanned)
+            & (settings.scanned_orders_retention_days > 0)  # 0 = keep forever
         )
 
         doomed = list(db.scalars(
@@ -1239,22 +1335,28 @@ prune_working_set = prune_orders
 
 
 def _exit_check_filter() -> tuple:
-    """Unscanned orders (with an AWB inside the retention) that left Packed / Ready-to-ship and OMSGuru has
-    not been asked about since."""
-    since = utcnow() - timedelta(days=settings.retain_orders_days)
+    """Unscanned, still-pending AWBs that left Packed / Ready-to-ship (MOVED, or SHIPPED / UNKNOWN in OMS) and
+    OMSGuru has not been asked about since they left, or not for EXIT_RECHECK_HOURS: they stay pending until a
+    scan, so a later cancellation / return must still reach them (up to PENDING_KEEP_DAYS)."""
+    since = utcnow() - timedelta(days=settings.pending_keep_days)
     counted_from = tracking.start_utc()
+    stale = utcnow() - timedelta(hours=EXIT_RECHECK_HOURS)
     return (
-        OmsOrder.status_group == "MOVED",
+        OmsOrder.status_group.in_(("MOVED", "SHIPPED", "UNKNOWN")),
         OmsOrder.tracking_norm != "",
         OmsOrder.awb_generated_at >= (max(since, counted_from) if counted_from else since),
-        (OmsOrder.exit_checked_at.is_(None)) | (OmsOrder.exit_checked_at < OmsOrder.left_at),
+        (OmsOrder.exit_checked_at.is_(None)) | (OmsOrder.exit_checked_at < OmsOrder.left_at)
+        | (OmsOrder.exit_checked_at < stale),
         ~exists().where(Scan.tracking_norm == OmsOrder.tracking_norm),
     )
 
 
 def _next_exit_candidate() -> OmsOrder | None:
     with session_scope() as db:
-        return db.scalar(select(OmsOrder).where(*_exit_check_filter()).order_by(OmsOrder.left_at, OmsOrder.id).limit(1))
+        # never asked first, then the longest ago
+        return db.scalar(select(OmsOrder).where(*_exit_check_filter())
+                         .order_by(OmsOrder.exit_checked_at.is_not(None), OmsOrder.exit_checked_at, OmsOrder.left_at,
+                                   OmsOrder.id).limit(1))
 
 
 def _mark_exit_checked(order_id: int) -> str:
