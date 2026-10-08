@@ -14,6 +14,7 @@ import shop.youthnic.scan.ForwardScanApp
 import shop.youthnic.scan.R
 import shop.youthnic.scan.databinding.ActivitySettingsBinding
 import shop.youthnic.scan.update.AppUpdater
+import shop.youthnic.scan.util.CameraTuning
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -41,6 +42,12 @@ class SettingsActivity : AppCompatActivity() {
         binding.switchSound.isChecked = sessionManager.isSoundEnabled
         binding.switchVibration.isChecked = sessionManager.isVibrationEnabled
         binding.switchFlash.isChecked = sessionManager.isFlashEnabled
+        binding.switchAutoPauseCamera.text = getString(R.string.camera_auto_pause, CameraTuning.IDLE_PAUSE_MINUTES)
+        binding.switchAutoPauseCamera.isChecked = sessionManager.isAutoPauseCamera
+        binding.switchSharpCamera.isChecked = sessionManager.isSharpCamera
+        binding.tvCameraInfo.text = sessionManager.lastCameraInfo.let {
+            if (it.isBlank()) getString(R.string.camera_info_unknown) else getString(R.string.camera_info_format, it)
+        }
         binding.etServerUrl.setText(sessionManager.serverUrl)
         if (!BuildConfig.DEBUG) {
             binding.etServerUrl.isEnabled = false
@@ -119,6 +126,8 @@ class SettingsActivity : AppCompatActivity() {
         sessionManager.isSoundEnabled = binding.switchSound.isChecked
         sessionManager.isVibrationEnabled = binding.switchVibration.isChecked
         sessionManager.isFlashEnabled = binding.switchFlash.isChecked
+        sessionManager.isAutoPauseCamera = binding.switchAutoPauseCamera.isChecked
+        sessionManager.isSharpCamera = binding.switchSharpCamera.isChecked
         if (BuildConfig.DEBUG) {
             val url = binding.etServerUrl.text?.toString()?.trim().orEmpty()
             if (url.startsWith("http://") || url.startsWith("https://")) {

@@ -86,6 +86,11 @@ class DuplicateGuard(
         return true
     }
 
+    /** Right after a scan every code is ignored anyway, so the camera skips reading frames meanwhile. */
+    @Synchronized
+    fun inCooldown(now: Long = System.currentTimeMillis()): Boolean =
+        lastEmittedAt > 0L && now - lastEmittedAt < anyCodeCooldownMs
+
     @Synchronized
     fun markEmitted(code: String, now: Long = System.currentTimeMillis()) {
         val clean = code.trim()

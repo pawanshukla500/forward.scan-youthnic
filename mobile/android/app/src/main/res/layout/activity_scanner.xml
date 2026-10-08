@@ -207,6 +207,63 @@
                 android:textStyle="bold"
                 tools:text="DUPLICATE" />
         </LinearLayout>
+
+        <!-- Camera closed after a while without scans (battery); tap anywhere here to open it again -->
+        <LinearLayout
+            android:id="@+id/layoutCameraPaused"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#F0111827"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="16dp"
+            android:visibility="gone"
+            tools:visibility="visible">
+
+            <ImageView
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:alpha="0.85"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_camera" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center"
+                android:text="@string/camera_paused_title"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvCameraPausedSub"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:alpha="0.75"
+                android:gravity="center"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                tools:text="No scan for 2 minutes" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_pill"
+                android:backgroundTint="@color/colorPrimary"
+                android:gravity="center"
+                android:minHeight="44dp"
+                android:paddingHorizontal="24dp"
+                android:text="@string/camera_paused_action"
+                android:textColor="@color/text_on_primary"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+        </LinearLayout>
     </FrameLayout>
 
     <!-- Result Area -->

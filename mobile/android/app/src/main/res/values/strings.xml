@@ -190,4 +190,14 @@
     <string name="tally_not_found">Not found %1$s</string>
     <string name="tally_check">Check %1$s</string>
     <string name="tally_stop">Stop %1$s</string>
+
+    <!-- Camera & battery (util/CameraTuning.kt) -->
+    <string name="camera_paused_title">Camera paused to save battery</string>
+    <string name="camera_paused_sub">No scan for %1$d minutes</string>
+    <string name="camera_paused_action">Tap to scan</string>
+    <string name="camera_section">CAMERA &amp; BATTERY</string>
+    <string name="camera_sharp">Sharper camera (1080p) - uses more battery</string>
+    <string name="camera_auto_pause">Pause camera after %1$d min without a scan</string>
+    <string name="camera_info_format">Camera in use: %1$s</string>
+    <string name="camera_info_unknown">Camera in use: shown after the scanner has been opened once</string>
 </resources>

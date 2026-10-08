@@ -2,13 +2,19 @@ package shop.youthnic.scan.ui
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CaptureRequest
 import android.os.Bundle
 import android.os.SystemClock
+import android.util.Range
 import android.util.Size
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.animation.OvershootInterpolator
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -17,14 +23,22 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.ColorInt
 import androidx.annotation.ColorRes
 import androidx.annotation.DrawableRes
+import androidx.annotation.OptIn
 import androidx.annotation.StringRes
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.widget.ImageViewCompat
 import androidx.lifecycle.lifecycleScope
@@ -61,6 +75,7 @@ import shop.youthnic.scan.databinding.ItemPendingRowBinding
 import shop.youthnic.scan.databinding.ItemSignalRowBinding
 import shop.youthnic.scan.databinding.SheetPendingBinding
 import shop.youthnic.scan.update.AppUpdater
+import shop.youthnic.scan.util.CameraTuning
 import shop.youthnic.scan.util.Cue
 import shop.youthnic.scan.util.ScanSignals
 import shop.youthnic.scan.util.Ui
@@ -92,6 +107,17 @@ class ScannerActivity : AppCompatActivity() {
     private var periodicJob: Job? = null
     private var refreshSoonJob: Job? = null
     private var pendingSheet: SheetPendingBinding? = null
+
+    /** Camera open (bound) or closed by the idle pause; [boundSharp] = opened at 1080p. */
+    private var cameraRunning = false
+    private var boundSharp = false
+    /** This phone rejected the frame-rate cap once: open the camera without it from now on. */
+    private var fpsCapFailed = false
+    /** A dialog or sheet covers the camera (read on the camera thread). */
+    @Volatile private var analysisBlocked = false
+    private var lastAnalyzedAt = 0L
+    private var lastActivityAt = 0L
+    private var idleJob: Job? = null
 
     /** Full-screen blink in the result's colour, laid over the whole screen in [initUi]. */
     private lateinit var flashView: View
@@ -129,6 +155,7 @@ class ScannerActivity : AppCompatActivity() {
         private const val REFRESH_EVERY_MS = 60_000L
         private const val PENDING_ROWS = 50
         private const val FRAME_MS = 16L
+        private const val IDLE_CHECK_MS = 5_000L
     }
 
     private val cameraPermissionLauncher = registerForActivityResult(
@@ -172,12 +199,28 @@ class ScannerActivity : AppCompatActivity() {
         super.onResume()
         startPeriodicRefresh()
         AppUpdater.resumePendingInstall(this)
+        noteActivity()
+        // Back from Settings with another camera quality, or the phone woken up after an idle pause: open the
+        // camera again so the packer can scan straight away. (The first start is startCamera() in onCreate.)
+        if (cameraProvider != null && hasCameraPermission()) {
+            val app = application as ForwardScanApp
+            if (!cameraRunning || boundSharp != app.sessionManager.isSharpCamera) resumeCamera()
+        }
+        updateKeepScreenOn()  // the idle pause may have been switched off in Settings
+        startIdleWatch()
     }
 
     override fun onPause() {
         super.onPause()
         periodicJob?.cancel()
         periodicJob = null
+        idleJob?.cancel()
+        idleJob = null
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) noteActivity()
+        return super.dispatchTouchEvent(ev)
     }
 
     private fun initUi() {
@@ -197,6 +240,7 @@ class ScannerActivity : AppCompatActivity() {
         binding.btnManual.setOnClickListener { showManualScanDialog() }
         binding.btnPending.setOnClickListener { showPendingSheet() }
         binding.btnRecent.setOnClickListener { showRecentScansSheet() }
+        binding.layoutCameraPaused.setOnClickListener { resumeCamera() }
 
         binding.cardResult.visibility = View.GONE
         binding.cardIdleState.visibility = View.VISIBLE
@@ -339,15 +383,38 @@ class ScannerActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
+    /** "Not more than" [size] (sensor orientation, 16:9 first): CameraX takes the closest size at or below it. */
+    private fun sizeAtMost(size: Pair<Int, Int>): ResolutionSelector = ResolutionSelector.Builder()
+        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+        .setResolutionStrategy(
+            ResolutionStrategy(Size(size.first, size.second), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
+        )
+        .build()
+
+    /**
+     * Opens the camera within the battery limits of [CameraTuning]: preview and barcode reading at 720p
+     * (1080p only with Settings -> Sharper camera), the sensor capped at ~24 fps when the phone allows it,
+     * the cheaper SurfaceView preview, and the screen kept on only while the camera runs.
+     */
+    @OptIn(ExperimentalCamera2Interop::class)
     private fun bindCameraUseCases() {
         val provider = cameraProvider ?: return
+        val session = (application as ForwardScanApp).sessionManager
+        val sharp = session.isSharpCamera
 
-        val preview = Preview.Builder().build().also {
+        binding.previewView.implementationMode = PreviewView.ImplementationMode.PERFORMANCE
+        val previewBuilder = Preview.Builder().setResolutionSelector(sizeAtMost(CameraTuning.PREVIEW))
+        val fps = if (fpsCapFailed) null else supportedFpsCap(provider)
+        if (fps != null) {
+            Camera2Interop.Extender(previewBuilder)
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps.first, fps.second))
+        }
+        val preview = previewBuilder.build().also {
             it.setSurfaceProvider(binding.previewView.surfaceProvider)
         }
 
         val imageAnalysis = ImageAnalysis.Builder()
-            .setTargetResolution(Size(1280, 720))
+            .setResolutionSelector(sizeAtMost(CameraTuning.analysisSize(sharp)))
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
 
@@ -357,10 +424,108 @@ class ScannerActivity : AppCompatActivity() {
 
         try {
             provider.unbindAll()
-            camera = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalysis)
+            val cam = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalysis)
+            camera = cam
+            cameraRunning = true
+            boundSharp = sharp
+            setTorchUi(false)
+            binding.layoutCameraPaused.visibility = View.GONE
             binding.tvScannerHint.text = getString(R.string.aim_at_awb)
+            updateKeepScreenOn()
+            imageAnalysis.resolutionInfo?.resolution?.let {
+                session.lastCameraInfo = CameraTuning.describe(it.width, it.height, fps)
+            }
+            // A phone that rejects the frame-rate cap reports a camera error: open it once more without the cap.
+            cam.cameraInfo.cameraState.removeObservers(this)
+            if (fps != null) {
+                cam.cameraInfo.cameraState.observe(this) { state ->
+                    if (state.error != null && !fpsCapFailed && cameraRunning) {
+                        fpsCapFailed = true
+                        bindCameraUseCases()
+                    }
+                }
+            }
         } catch (e: Exception) {
             binding.tvScannerHint.text = "Camera bind error: ${e.message}"
+        }
+    }
+
+    /** The phone's own frame-rate range closest under [CameraTuning.MAX_FPS], or null to keep its default. */
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun supportedFpsCap(provider: ProcessCameraProvider): Pair<Int, Int>? = try {
+        val info = CameraSelector.DEFAULT_BACK_CAMERA.filter(provider.availableCameraInfos).firstOrNull()
+        val ranges = info?.let {
+            Camera2CameraInfo.from(it).getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+        }
+        CameraTuning.pickFpsRange(ranges.orEmpty().map { it.lower to it.upper })
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun hasCameraPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+    // ---- idle pause: the camera closes after a while without scans ---------------------------------
+
+    /** A scan or a touch: the packer is working, keep the camera open. */
+    private fun noteActivity() {
+        lastActivityAt = SystemClock.elapsedRealtime()
+    }
+
+    private fun startIdleWatch() {
+        idleJob?.cancel()
+        idleJob = lifecycleScope.launch {
+            while (isActive) {
+                delay(IDLE_CHECK_MS)
+                val autoPause = (application as ForwardScanApp).sessionManager.isAutoPauseCamera
+                val idleFor = SystemClock.elapsedRealtime() - lastActivityAt
+                if (cameraRunning && autoPause && idleFor >= CameraTuning.IDLE_PAUSE_MS && !isRequestInFlight.get()) {
+                    pauseCamera()
+                }
+            }
+        }
+    }
+
+    /** Closes the camera (sensor, ML Kit and torch all stop) and lets the screen go to sleep as usual. */
+    private fun pauseCamera() {
+        if (!cameraRunning) return
+        cameraRunning = false
+        camera?.cameraInfo?.cameraState?.removeObservers(this)
+        cameraProvider?.unbindAll()
+        camera = null
+        setTorchUi(false)
+        binding.tvCameraPausedSub.text = getString(R.string.camera_paused_sub, CameraTuning.IDLE_PAUSE_MINUTES)
+        binding.layoutCameraPaused.visibility = View.VISIBLE
+        updateKeepScreenOn()
+    }
+
+    private fun resumeCamera() {
+        noteActivity()
+        if (!hasCameraPermission()) return
+        binding.layoutCameraPaused.visibility = View.GONE
+        if (cameraProvider == null) startCamera() else bindCameraUseCases()
+    }
+
+    /**
+     * Screen stays on while the camera is open (packers rarely touch the phone between scans), but only when
+     * the idle pause is on - then it is never longer than [CameraTuning.IDLE_PAUSE_MS] after the last scan.
+     */
+    private fun updateKeepScreenOn() {
+        val autoPause = (application as ForwardScanApp).sessionManager.isAutoPauseCamera
+        if (cameraRunning && autoPause) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    /** Dialogs and sheets cover the camera: stop reading barcodes behind them (no accidental scan, less CPU). */
+    private fun blockAnalysisWhileShown(dialog: Dialog, onDismiss: () -> Unit = {}) {
+        analysisBlocked = true
+        dialog.setOnDismissListener {
+            analysisBlocked = false
+            noteActivity()
+            onDismiss()
         }
     }
 
@@ -368,11 +533,17 @@ class ScannerActivity : AppCompatActivity() {
     private fun processImageProxy(imageProxy: ImageProxy) {
         val scanner = barcodeScanner
         val mediaImage = imageProxy.image
+        val now = SystemClock.elapsedRealtime()
 
-        if (mediaImage == null || scanner == null || isRequestInFlight.get()) {
+        // Battery: read at most every ANALYZE_EVERY_MS, and not at all while a scan is being sent, right after
+        // a scan (every code is ignored during the cooldown anyway) or behind a dialog.
+        if (mediaImage == null || scanner == null || isRequestInFlight.get() || analysisBlocked ||
+            now - lastAnalyzedAt < CameraTuning.ANALYZE_EVERY_MS || duplicateGuard.inCooldown()
+        ) {
             imageProxy.close()
             return
         }
+        lastAnalyzedAt = now
 
         val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
         scanner.process(image)
@@ -417,6 +588,7 @@ class ScannerActivity : AppCompatActivity() {
 
     private fun submitScan(rawAwb: String) {
         if (!isRequestInFlight.compareAndSet(false, true)) return
+        noteActivity()
 
         val app = application as ForwardScanApp
         val apiClient = app.apiClient
@@ -664,10 +836,15 @@ class ScannerActivity : AppCompatActivity() {
 
     private fun toggleTorch() {
         val cam = camera ?: return
-        isTorchOn = !isTorchOn
+        setTorchUi(!isTorchOn)
         cam.cameraControl.enableTorch(isTorchOn)
-        val color = ContextCompat.getColor(this, if (isTorchOn) R.color.colorPrimary else R.color.text_primary)
-        binding.tvTorchLabel.text = getString(if (isTorchOn) R.string.torch_on else R.string.torch_off)
+    }
+
+    /** Torch button state; a newly opened or closed camera always starts with the torch off. */
+    private fun setTorchUi(on: Boolean) {
+        isTorchOn = on
+        val color = ContextCompat.getColor(this, if (on) R.color.colorPrimary else R.color.text_primary)
+        binding.tvTorchLabel.text = getString(if (on) R.string.torch_on else R.string.torch_off)
         binding.tvTorchLabel.setTextColor(color)
         ImageViewCompat.setImageTintList(binding.ivTorch, android.content.res.ColorStateList.valueOf(color))
     }
@@ -692,6 +869,7 @@ class ScannerActivity : AppCompatActivity() {
             }
         }
 
+        blockAnalysisWhileShown(dialog)
         dialog.show()
     }
 
@@ -711,7 +889,7 @@ class ScannerActivity : AppCompatActivity() {
         sb.tvPendingChannel.text = channelName
         sb.btnClosePending.setOnClickListener { sheet.dismiss() }
         sb.btnRefreshPending.setOnClickListener { reloadPending(sb) }
-        sheet.setOnDismissListener { if (pendingSheet === sb) pendingSheet = null }
+        blockAnalysisWhileShown(sheet) { if (pendingSheet === sb) pendingSheet = null }
         pendingSheet = sb
         scanContext?.let { renderPendingSheet(sb, it) }
         sheet.show()
@@ -811,6 +989,7 @@ class ScannerActivity : AppCompatActivity() {
         sb.tvRecentSub.text = channelName
         sb.btnCloseRecent.setOnClickListener { sheet.dismiss() }
         sb.progressRecent.visibility = View.VISIBLE
+        blockAnalysisWhileShown(sheet)
         sheet.show()
 
         lifecycleScope.launch {
