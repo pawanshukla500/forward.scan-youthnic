@@ -21,7 +21,7 @@ from ..security import current_user
 from ..services import cache, reconcile, scanning, tracking
 from ..services.realtime import hub
 from ..services.scanning import _event, find_orders, order_payload, process_scan, scan_payload
-from ..timeutil import today_dispatch_date, utcnow
+from ..timeutil import from_unix, to_local, today_dispatch_date, utcnow
 
 router = APIRouter(prefix="/api", tags=["scan"])
 log = logging.getLogger("scan")
@@ -136,7 +136,12 @@ def scan(body: ScanIn, db: Session = Depends(get_db), user: User = Depends(curre
     db.commit()  # hand the connection back: brief() below uses its own sessions
     if res.get("code") == "NOT_IN_OMS" and engine:
         b = engine.brief()
-        if res.get("live") in ("busy", "timeout", "error"):
+        if res.get("live") == "down" or b.get("omsguru_down_since"):
+            since = b.get("omsguru_down_since")
+            at = f" since {to_local(from_unix(int(since))):%H:%M}" if since else ""
+            res["message"] = (f"NOT FOUND - not saved: OMSGuru is down{at} (their outage), so labels made since then "
+                              "cannot be checked. Keep the packet aside and scan it again when OMSGuru is back")
+        elif res.get("live") in ("busy", "timeout", "error"):
             res["message"] = ("NOT FOUND - not saved: OMSGuru did not answer in time. Scan the same packet again "
                               "in a moment")
         elif b["invoices_failing"]:

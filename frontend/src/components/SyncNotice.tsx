@@ -12,6 +12,8 @@ interface Brief {
   sync_interval_seconds?: number;
   invoices_failing?: boolean;
   invoices_error?: string;
+  /** unix seconds since OMSGuru stopped answering (their outage) */
+  omsguru_down_since?: number | null;
   waiting_for_credit: boolean;
   crosscheck_off?: boolean;
 }
@@ -71,6 +73,23 @@ export function useSyncState(): SyncState | null {
         </>
       ),
     };
+  if (b.omsguru_down_since) {
+    const at = new Date(b.omsguru_down_since * 1000).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+    return {
+      tone: "crit",
+      icon: <RefreshCwOff className="size-4" />,
+      title: `OMSGuru is down since ${at} (their outage)`,
+      short: "OMSGuru down",
+      body: (
+        <>
+          scanning works for every order synced before {at}. Labels made since then show <i>Not found - not saved</i>: keep those packets
+          aside and scan them again when OMSGuru is back. Nothing is missed: when it answers again the app continues from {at} and re-checks
+          the last 7 days by itself.
+          {b.invoices_error && <span className="mt-1 block text-xs opacity-80">{b.invoices_error}</span>}
+        </>
+      ),
+    };
+  }
   if (b.invoices_failing)
     return {
       tone: "crit",

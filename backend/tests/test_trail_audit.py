@@ -225,3 +225,94 @@ def test_a_short_blip_does_not_start_a_catch_up(env, monkeypatch):
     run(eng._guard("invoices", eng.sync_invoices))
     assert sm._get_state("omsguru_down_since") is None and not sm._get_state("trail_audit_force_deep")
 
+
+
+def test_outage_mode_scans_dont_wait_and_only_the_probe_knocks(env, monkeypatch):
+    """OMSGuru down (9 Oct 2026, 503 for hours): scans answer from the stored orders at once, only the new-AWB sync
+    probes (every DOWN_PROBE_SECONDS), every other job keeps its place; back up -> normal again."""
+    _, eng = env
+    eng.omsguru_down_since = time.time() - 120
+    try:
+        sm._set_state("invoices_probe_at", time.time())
+        sm._set_state("cleanup_last_done", time.time())
+        sm._set_state("open_orders_last_done", 0)  # would be due - but not while OMSGuru is down
+        assert eng._next_job() is None
+        sm._set_state("invoices_probe_at", time.time() - sm.DOWN_PROBE_SECONDS - 1)
+        assert eng._next_job() == "invoices"
+        t0 = time.monotonic()
+        info = eng.live_lookup("ANYAWB000001", "ANYAWB000001", [])
+        assert info["live"] == "down" and time.monotonic() - t0 < 0.1
+        assert eng.brief()["omsguru_down_since"] and eng.brief()["invoices_failing"]
+    finally:
+        eng.omsguru_down_since = None
+        sm._set_state("omsguru_down_since", None)
+        sm._set_state("open_orders_last_done", time.time())
+
+
+def test_a_job_stopped_by_a_restart_is_not_recorded_as_a_success(env):
+    """9 Oct 2026 12:15:24: a deploy stopped a failing new-AWB sync mid-call and it was logged 'ok' with 0 calls."""
+    _, eng = env
+    from app.models import SyncLog
+
+    eng.jobs["invoices"].last_ok = False
+
+    async def slow(job):
+        await asyncio.sleep(30)
+
+    async def go():
+        t = asyncio.create_task(eng._guard("invoices", slow))
+        await asyncio.sleep(0.05)
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+
+    with session_scope() as db:
+        before = db.scalar(select(SyncLog.id).order_by(SyncLog.id.desc()).limit(1)) or 0
+    run(go())
+    assert eng.jobs["invoices"].last_ok is False and not eng.jobs["invoices"].running
+    with session_scope() as db:
+        assert db.scalar(select(SyncLog.id).where(SyncLog.id > before, SyncLog.job == "invoices")) is None
+
+
+def test_omsguru_5xx_is_given_up_after_a_few_tries(monkeypatch):
+    import dataclasses
+
+    import httpx
+
+    from app.oms import client as client_module
+    from app.oms.client import OmsClient, OmsError
+
+    monkeypatch.setattr(client_module, "settings",
+                        dataclasses.replace(client_module.settings, oms_token="t", oms_client_id="1"))
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    async def go():
+        c = OmsClient()
+        calls = []
+
+        async def send(method, path, form, params, timeout=None):
+            calls.append(path)
+            return httpx.Response(503, text="<html>503</html>", request=httpx.Request(method, "https://oms.test" + path))
+
+        async def credit(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(c, "_send", send)
+        monkeypatch.setattr(c, "_wait_for_credit", credit)
+        monkeypatch.setattr(c.state, "estimated_remaining", lambda: 60.0)
+        monkeypatch.setattr(client_module.asyncio, "sleep", fake_sleep)
+        try:
+            with pytest.raises(OmsError) as e:
+                await c.request("POST", "/order_api/invoices")
+        finally:
+            await c.aclose()
+        return calls, str(e.value)
+
+    calls, err = asyncio.run(go())
+    assert len(calls) == client_module.SERVER_ERROR_TRIES and "OMSGuru's server is down" in err
+    assert sum(sleeps) < 10  # seconds, not minutes

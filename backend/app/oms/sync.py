@@ -55,7 +55,7 @@ STATUS_PACKED = 9
 OPEN_STATUSES = (STATUS_PACKED, STATUS_READY_TO_SHIP)
 # order_aging status names that make up the working set
 AGING_OPEN = ("packed", "ready to ship")
-CANCEL_STATUSES = (15, 6, 19)  # Cancelled, CancelInit, Cancelled Before Shipping
+CANCEL_STATUSES = (15, 6, 19, 20)  # Cancelled, CancelInit, Cancelled Before Shipping, Removed Before Shipping
 INVOICE_OVERLAP_SECONDS = 15 * 60
 # Background history backfill only runs while at least this many API credits are free (idle capacity).
 HISTORY_MIN_CREDITS = 30
@@ -83,6 +83,9 @@ AUDIT_DEEP_DAYS = 7
 AUDIT_DEEP_HOUR = 3
 # OMSGuru unreachable at least this long (the new-AWB sync failing): when it answers again, a full catch-up starts.
 CATCH_UP_AFTER_SECONDS = 5 * 60
+# While OMSGuru is down only the new-AWB sync keeps knocking, this often at most (other jobs wait; scans answer
+# from the stored orders without asking OMSGuru live).
+DOWN_PROBE_SECONDS = 30
 AUDIT_KEEP_DAYS = 10  # results kept for Admin / Pending
 # Status groups that belong in the working set (see mapping.status_group).
 WORKING_SET = ("OPEN",)
@@ -173,6 +176,8 @@ class SyncEngine:
         self._lookup_pref: dict[int | None, str] = {}
         # monotonic time of the last scheduler loop turn (/api/health; the server watchdog restarts a stalled loop)
         self.heartbeat = time.monotonic()
+        # time.time() since when OMSGuru has not been answering (None = up); kept in the sync state as well
+        self.omsguru_down_since: float | None = None
 
     # ---- lifecycle ---------------------------------------------------------------------------
 
@@ -291,7 +296,9 @@ class SyncEngine:
             # last time new AWBs were pulled successfully (survives restarts via the sync state)
             "last_invoice_sync": _get_state("invoices_last_done"),
             "sync_interval_seconds": settings.sync_interval_seconds,
-            "invoices_failing": inv.last_ok is False,
+            "invoices_failing": inv.last_ok is False or bool(self.omsguru_down_since),
+            # since when OMSGuru is not answering (unix seconds) - their outage: the banner says so
+            "omsguru_down_since": self.omsguru_down_since,
             "invoices_error": inv.last_message if inv.last_ok is False else "",
             "waiting_for_credit": lim.waiting,
             "throttled_total": lim.throttled_total,
@@ -304,6 +311,11 @@ class SyncEngine:
 
     async def _run(self) -> None:
         await asyncio.sleep(2)
+        try:
+            since = await _aget("omsguru_down_since")
+            self.omsguru_down_since = float(since) if since else None
+        except Exception:  # noqa: BLE001
+            log.exception("could not read the OMSGuru outage state")
         try:
             await asyncio.to_thread(self._auto_select_warehouses)
         except Exception:  # noqa: BLE001
@@ -330,8 +342,10 @@ class SyncEngine:
     async def _tick(self) -> bool:
         if self._urgent.is_set():
             self._urgent.clear()
-            await self._guard("invoices", self.sync_invoices)
-            return True
+            # while OMSGuru is down a "not found" scan does not knock again: the 30-s probe does
+            if not self.omsguru_down_since:
+                await self._guard("invoices", self.sync_invoices)
+                return True
         # Deciding reads the sync state from the database: do it on a worker thread, never on the event loop that
         # serves every station (a blocked loop froze the whole server for 30-60 s in the 3 Oct load test).
         name = await asyncio.to_thread(self._next_job)
@@ -346,6 +360,10 @@ class SyncEngine:
             return "crosscheck"  # right after a full refresh, while both are in step
         if self._due("cleanup_last_done", CLEANUP_EVERY_SECONDS):
             return "cleanup"
+        if self.omsguru_down_since:
+            # OMSGuru is down: knock with the new-AWB sync only (it resumes from its saved position and its success
+            # starts the catch-up); every other job keeps its place and waits
+            return "invoices" if self._due("invoices_probe_at", DOWN_PROBE_SECONDS) else None
         if self._due("channels_last_done", CHANNELS_EVERY_SECONDS) or not self._has_channels():
             return "channels"
         if self._due("sku_photos_last_done", CHANNELS_EVERY_SECONDS) and self._has_channels():
@@ -376,8 +394,12 @@ class SyncEngine:
         st.last_started = time.time()
         job = _Job(st)
         ok, msg = True, ""
+        cancelled = False
         try:
             msg = await fn(job) or ""
+        except asyncio.CancelledError:
+            cancelled = True  # stopped mid-run (shutdown / deploy): NOT a success - nothing is recorded
+            raise
         except OmsError as exc:
             ok, msg = False, str(exc)
             log.warning("%s failed: %s", name, exc)
@@ -385,24 +407,30 @@ class SyncEngine:
             ok, msg = False, f"{type(exc).__name__}: {exc}"
             log.exception("%s crashed", name)
         finally:
-            recovered = st.last_ok is False and ok
-            st.running = False
-            st.last_finished = time.time()
-            st.last_ok = ok
-            st.last_message = msg[:300]
-            st.records = job.records
-            # No-op polls are neither logged nor announced: every "sync" event makes every open page reload.
-            if job.records or not ok or recovered:
-                await asyncio.to_thread(_log_run, name, ok, job.calls, job.records, msg)
-                hub.publish("sync", {"job": name, "ok": ok, "message": msg[:200], "records": job.records})
-            if name == "invoices":
-                try:
-                    await self._note_omsguru(ok)
-                except Exception:  # noqa: BLE001 - bookkeeping must never stop the sync loop
-                    log.exception("could not record the OMSGuru connection state")
+            if cancelled:
+                st.running = False
+        if cancelled:
+            return
+        recovered = st.last_ok is False and ok
+        st.running = False
+        st.last_finished = time.time()
+        st.last_ok = ok
+        st.last_message = msg[:300]
+        st.records = job.records
+        # No-op polls are neither logged nor announced: every "sync" event makes every open page reload.
+        if job.records or not ok or recovered:
+            await asyncio.to_thread(_log_run, name, ok, job.calls, job.records, msg)
+            hub.publish("sync", {"job": name, "ok": ok, "message": msg[:200], "records": job.records})
+        if name == "invoices":
+            try:
+                if self.omsguru_down_since:
+                    await _aset("invoices_probe_at", time.time())
+                await self._note_omsguru(ok)
+            except Exception:  # noqa: BLE001 - bookkeeping must never stop the sync loop
+                log.exception("could not record the OMSGuru connection state")
         if not ok:
-            # Don't hot-loop a failing job.
-            await asyncio.sleep(15)
+            # Don't hot-loop a failing job (longer while OMSGuru is down).
+            await asyncio.sleep(DOWN_PROBE_SECONDS if self.omsguru_down_since else 15)
 
     async def _note_omsguru(self, ok: bool) -> None:
         """The new-AWB sync is the pulse of the OMSGuru connection. Remember (in the database, so a restart does not
@@ -415,8 +443,13 @@ class SyncEngine:
         since = await _aget("omsguru_down_since")
         if not ok:
             if not since:
-                await _aset("omsguru_down_since", time.time())
+                since = time.time()
+                await _aset("omsguru_down_since", since)
+                log.warning("OMSGuru is not answering - outage mode: scans use the stored orders, the sync probes "
+                            "every %ss and catches up when it is back", DOWN_PROBE_SECONDS)
+            self.omsguru_down_since = float(since)
             return
+        self.omsguru_down_since = None
         if not since:
             return
         await _aset("omsguru_down_since", None)
@@ -451,6 +484,9 @@ class SyncEngine:
         loop = hub._loop  # noqa: SLF001 - the app's event loop, where the HTTP client lives
         info: dict[str, Any] = {"live": "off", "calls": 0, "changed": False}
         if not settings.live_lookup or loop is None:
+            return info
+        if self.omsguru_down_since:
+            info["live"] = "down"  # OMSGuru is down: answer from the stored orders at once, no waiting on errors
             return info
         t0 = time.monotonic()
         deadline = t0 + settings.live_timeout_seconds
