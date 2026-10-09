@@ -1096,6 +1096,7 @@ const JOB_LABEL: Record<string, string> = {
   cancel_sweep: "Cancellation check (stored orders only)",
   audit: "Order-trail check: every AWB of today + yesterday vs OMSGuru both ways, adds missed ones (hourly; last 7 days once a night)",
   exit_check: "Status of orders that left RTS unscanned (spare credits only)",
+  catch_up: "Catch-up after an OMSGuru outage: resumes from where it stopped, re-checks 7 days, refreshes the open list",
   history: "History backfill of earlier days (spare credits only)",
   cleanup: "Clean-up (orders older than the retention, old scans)",
   channels: "Sales channels",

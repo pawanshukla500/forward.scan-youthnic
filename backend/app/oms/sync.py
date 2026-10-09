@@ -81,6 +81,8 @@ AUDIT_DAYS = 2
 # cancellations / returns of older pending AWBs, and AWBs OMSGuru added to earlier days afterwards.
 AUDIT_DEEP_DAYS = 7
 AUDIT_DEEP_HOUR = 3
+# OMSGuru unreachable at least this long (the new-AWB sync failing): when it answers again, a full catch-up starts.
+CATCH_UP_AFTER_SECONDS = 5 * 60
 AUDIT_KEEP_DAYS = 10  # results kept for Admin / Pending
 # Status groups that belong in the working set (see mapping.status_group).
 WORKING_SET = ("OPEN",)
@@ -393,9 +395,45 @@ class SyncEngine:
             if job.records or not ok or recovered:
                 await asyncio.to_thread(_log_run, name, ok, job.calls, job.records, msg)
                 hub.publish("sync", {"job": name, "ok": ok, "message": msg[:200], "records": job.records})
+            if name == "invoices":
+                try:
+                    await self._note_omsguru(ok)
+                except Exception:  # noqa: BLE001 - bookkeeping must never stop the sync loop
+                    log.exception("could not record the OMSGuru connection state")
         if not ok:
             # Don't hot-loop a failing job.
             await asyncio.sleep(15)
+
+    async def _note_omsguru(self, ok: bool) -> None:
+        """The new-AWB sync is the pulse of the OMSGuru connection. Remember (in the database, so a restart does not
+        forget) when it started failing; when it works again after CATCH_UP_AFTER_SECONDS or more, catch up in full.
+
+        Nothing is skipped even without this: the new-AWB cursor only moves after a window was read completely, so the
+        first successful run reads from where it stopped up to now; the open-order refresh and the order-trail audit
+        keep their page and continue. The catch-up adds a deep check on top: every invoice of the last days AWB by AWB
+        (missing ones added), the whole Packed / Ready-to-ship list and the cancellations, all at once."""
+        since = await _aget("omsguru_down_since")
+        if not ok:
+            if not since:
+                await _aset("omsguru_down_since", time.time())
+            return
+        if not since:
+            return
+        await _aset("omsguru_down_since", None)
+        down_for = time.time() - float(since)
+        if down_for < CATCH_UP_AFTER_SECONDS:
+            return
+        await _aset("trail_audit_progress", None)
+        await _aset("trail_audit_force_deep", True)
+        await _aset("trail_audit_last_done", 0)
+        await asyncio.to_thread(self.request_full, "open_orders")
+        await asyncio.to_thread(self.request_full, "cancel_sweep")
+        msg = (f"OMSGuru answering again after {int(down_for // 60)} min - catch-up started: new AWBs resumed from where "
+               "they stopped; every order of the last 7 days re-checked; Packed / Ready-to-ship list and cancellations "
+               "refreshed")
+        log.warning(msg)
+        await asyncio.to_thread(_log_run, "catch_up", True, 0, 0, msg)
+        hub.publish("sync", {"job": "catch_up", "ok": True, "message": msg[:200], "records": 0})
 
     # ---- scan-time live lookup ---------------------------------------------------------------
 
