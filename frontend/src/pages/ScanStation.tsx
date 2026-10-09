@@ -279,7 +279,10 @@ export default function ScanStation() {
       if (res.scan && res.severity !== "error") {
         const saved = res.scan;
         lastScanAt.current = Math.max(lastScanAt.current, Date.parse(saved.scanned_at));
-        setMineToday((n) => n + 1);
+        // only successful scans count (OK / Check): a Not found is a flagged notification, and "already saved" is the
+        // packer's own scan of a moment ago - neither goes into "by you"
+        const counted = (saved.result === "OK" || saved.result === "WARN") && res.code !== "ALREADY_SAVED";
+        if (counted) setMineToday((n) => n + 1);
         setRecent((r) => (r.some((s) => s.id === saved.id) ? r : [saved, ...r].slice(0, 40)));
         // take it off the dispatch queue straight away; the server count follows
         setCtx((c) => (c ? { ...c, queue: c.queue.filter((q) => norm(q.awb) !== norm(saved.tracking_norm) && norm(q.awb) !== norm(saved.tracking)) } : c));

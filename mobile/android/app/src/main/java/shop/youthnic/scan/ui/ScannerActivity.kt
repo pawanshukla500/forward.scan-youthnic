@@ -831,7 +831,9 @@ class ScannerActivity : AppCompatActivity() {
 
     private fun renderTally() {
         binding.scrollTally.visibility = View.VISIBLE
-        binding.tvTallyOk.text = getString(R.string.tally_ok, Ui.count(tally[Cue.OK.ordinal]))
+        // the session total = successful scans only (OK + Check, the same as "#N"); Not found / Duplicate / Stop are
+        // alerts shown beside it, never part of it
+        binding.tvTallyOk.text = getString(R.string.tally_scanned, Ui.count(tally[Cue.OK.ordinal] + tally[Cue.CHECK.ordinal]))
         binding.tvTallyDuplicate.text = getString(R.string.tally_duplicate, Ui.count(tally[Cue.DUPLICATE.ordinal]))
         binding.tvTallyNotFound.text = getString(R.string.tally_not_found, Ui.count(tally[Cue.NOT_FOUND.ordinal]))
         tallyPill(binding.tvTallyCheck, R.string.tally_check, tally[Cue.CHECK.ordinal])

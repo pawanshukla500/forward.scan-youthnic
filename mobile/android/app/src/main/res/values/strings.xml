@@ -219,4 +219,5 @@
     <string name="signal_not_saved">NOT SAVED</string>
     <string name="not_saved_message">The server had a problem - this scan was NOT saved</string>
     <string name="action_not_saved">Scan the same packet again in a moment</string>
+    <string name="tally_scanned">Scanned %1$s</string>
 </resources>
