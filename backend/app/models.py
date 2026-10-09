@@ -27,6 +27,10 @@ STAFF_ROLES = ("admin", "manager", "supervisor")
 # scanned (the packet is gone); a real scan of the same AWB later replaces it instead of answering "Duplicate".
 MARKED_SHIPPED_FLAG = "MARKED_SHIPPED"
 SYSTEM_SHIPPED_USERNAME = "omsguru.shipped"
+# An admin's bulk scan (backend/bulk_scan.py, owner-approved): counted as a successful scan like a manual one, recorded
+# under its own account; a real scan of the same packet later takes its place (OK, never "Duplicate").
+BULK_SCAN_FLAG = "BULK_SCAN"
+BULK_SCAN_USERNAME = "bulk.scan"
 
 
 class User(Base):
