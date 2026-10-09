@@ -14,7 +14,8 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import event
+from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from .db import Base
 from .timeutil import utcnow
@@ -249,6 +250,43 @@ class ScanEvent(Base):
     scan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     user: Mapped[User | None] = relationship(lazy="joined")
+
+
+class DeletedScan(Base):
+    """Every scan the app removes (a supervisor's "remove scan", a real scan replacing a one-time mark, a clean-up
+    script, any future code) is copied here first - the whole row, with why and when - so scanned data is never lost.
+    backend/restore_deleted_scans.py puts one back. Only the SCAN_RETENTION_DAYS clean-up (3 years) is not copied."""
+
+    __tablename__ = "deleted_scans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scan_id: Mapped[int] = mapped_column(Integer, index=True)
+    tracking_norm: Mapped[str] = mapped_column(String(120), index=True)
+    dispatch_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    channel_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    reason: Mapped[str] = mapped_column(String(300), default="")
+    data: Mapped[str] = mapped_column(Text, default="")  # JSON of every column of the scan
+
+
+def _jsonable(v):
+    return v.isoformat() if isinstance(v, (date, datetime)) else v
+
+
+@event.listens_for(Session, "before_flush")
+def _archive_deleted_scans(session, flush_context, instances) -> None:
+    """Runs for EVERY session before rows are written: scans about to be deleted are copied to deleted_scans in the
+    same transaction (rolled back together if the delete is). The caller may say why in session.info["delete_reason"]."""
+    import json
+
+    for obj in list(session.deleted):
+        if isinstance(obj, Scan):
+            session.add(DeletedScan(
+                scan_id=obj.id, tracking_norm=obj.tracking_norm or "", dispatch_date=obj.dispatch_date,
+                channel_id=obj.channel_id, deleted_at=utcnow(),
+                reason=str(session.info.get("delete_reason") or "removed")[:300],
+                data=json.dumps({c.name: _jsonable(getattr(obj, c.name)) for c in Scan.__table__.columns}),
+            ))
 
 
 class SyncState(Base):

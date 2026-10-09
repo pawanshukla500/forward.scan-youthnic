@@ -503,6 +503,7 @@ def process_scan(
             _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=mark.tracking_norm,
                    outcome="MARK_REPLACED", scan_id=mark.id,
                    message=f"Real scan replaces the 'shipped in OMSGuru' mark dated {mark.dispatch_date:%d-%b-%Y}")
+            db.info["delete_reason"] = "One-time mark replaced by a real scan"
             db.delete(mark)
             db.flush()
     scan = Scan(

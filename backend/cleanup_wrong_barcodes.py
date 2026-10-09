@@ -95,6 +95,7 @@ def main() -> None:
             _event(db, user=user, station="cleanup", channel_id=s.channel_id, raw=s.tracking_raw, norm=s.tracking_norm,
                    outcome="VOIDED", message=f"Removed by cleanup: {why}" if a.all else
                    f"Removed by cleanup: not an AWB (wrong barcode). {why}", scan_id=s.id)
+            db.info["delete_reason"] = f"Removed by cleanup: {why}"
             db.delete(s)
     cache.clear()
     print(f"Removed {len(found)} scans (audit trail: scan_events, outcome VOIDED).")
