@@ -66,8 +66,8 @@ export function useSyncState(): SyncState | null {
       short: "Loading orders",
       body: (
         <>
-          {b.cached_orders.toLocaleString("en-IN")} orders so far. You can scan now: anything not loaded yet is saved as <i>Not found</i> and turns green
-          by itself when its order arrives.
+          {b.cached_orders.toLocaleString("en-IN")} orders so far. You can scan now: a packet whose order is not loaded yet shows{" "}
+          <i>Not found - not saved</i>; keep it aside and scan it again in a few minutes.
         </>
       ),
     };
@@ -79,7 +79,8 @@ export function useSyncState(): SyncState | null {
       short: "Sync failing",
       body: (
         <>
-          new AWBs are not coming in, so new labels show as <i>Not found</i> (scans are still saved and verify once it recovers). Tell a supervisor.
+          new AWBs are not coming in. Orders synced before still scan normally; labels made since then show{" "}
+          <i>Not found - not saved</i> - keep those packets aside and scan them again once the sync is back. Tell a supervisor.
           {b.invoices_error && <span className="mt-1 block text-xs opacity-80">{b.invoices_error}</span>}
         </>
       ),
@@ -96,7 +97,7 @@ export function useSyncState(): SyncState | null {
           {b.waiting_for_credit
             ? "the OMSGuru API is busy (60 calls per 5 minutes, shared with your other integrations). "
             : "the sync is behind. "}
-          Labels made since then show as <i>Not found</i>; scans are still saved and verify by themselves.
+          Labels made since then show <i>Not found - not saved</i>: keep those packets aside and scan them again in a few minutes.
         </>
       ),
     };
@@ -106,7 +107,7 @@ export function useSyncState(): SyncState | null {
       icon: <Hourglass className="size-4" />,
       title: "OMSGuru API is busy",
       short: "OMSGuru busy",
-      body: "(60 calls per 5 minutes, shared with your other integrations). New orders may take a few minutes to verify; scans are still saved.",
+      body: "(60 calls per 5 minutes, shared with your other integrations). Brand-new labels may show Not found for a few minutes - scan them again shortly.",
     };
   if (b.crosscheck_off)
     return {
