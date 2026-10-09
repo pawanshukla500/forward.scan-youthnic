@@ -14,6 +14,7 @@ interface Brief {
   invoices_error?: string;
   /** unix seconds since OMSGuru stopped answering (their outage) */
   omsguru_down_since?: number | null;
+  omsguru_state?: "ok" | "down" | "key_refused";
   waiting_for_credit: boolean;
   crosscheck_off?: boolean;
 }
@@ -78,12 +79,15 @@ export function useSyncState(): SyncState | null {
     return {
       tone: "crit",
       icon: <RefreshCwOff className="size-4" />,
-      title: `OMSGuru is down since ${at} (their outage)`,
-      short: "OMSGuru down",
+      title:
+        b.omsguru_state === "key_refused"
+          ? `OMSGuru refuses our API key since ${at} - an admin must update the OMSGuru API token`
+          : `OMSGuru is down since ${at} (their outage)`,
+      short: b.omsguru_state === "key_refused" ? "OMSGuru key refused" : "OMSGuru down",
       body: (
         <>
           scanning works for every order synced before {at}. Labels made since then show <i>Not found - not saved</i>: keep those packets
-          aside and scan them again when OMSGuru is back. Nothing is missed: when it answers again the app continues from {at} and re-checks
+          aside and scan them again when the sync is back. Nothing is missed: when it works again the app continues from {at} and re-checks
           the last 7 days by itself.
           {b.invoices_error && <span className="mt-1 block text-xs opacity-80">{b.invoices_error}</span>}
         </>

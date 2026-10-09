@@ -229,6 +229,8 @@ def health():
         "ws_clients": hub.count,
         "started_at": STARTED_AT,
         "sync_loop_age_s": loop_age,
+        # OMSGuru connection as the sync sees it: ok / down (their outage) / key_refused (token must be updated)
+        "omsguru": (sync_module._get_state("omsguru_status") or {}).get("state") if eng is not None else None,
     }
 
 

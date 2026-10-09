@@ -139,8 +139,10 @@ def scan(body: ScanIn, db: Session = Depends(get_db), user: User = Depends(curre
         if res.get("live") == "down" or b.get("omsguru_down_since"):
             since = b.get("omsguru_down_since")
             at = f" since {to_local(from_unix(int(since))):%H:%M}" if since else ""
-            res["message"] = (f"NOT FOUND - not saved: OMSGuru is down{at} (their outage), so labels made since then "
-                              "cannot be checked. Keep the packet aside and scan it again when OMSGuru is back")
+            what = ("OMSGuru refuses our API key" if b.get("omsguru_state") == "key_refused"
+                    else "OMSGuru is down")
+            res["message"] = (f"NOT FOUND - not saved: {what}{at}, so labels made since then cannot be checked. Keep "
+                              "the packet aside and scan it again when the OMSGuru sync is back")
         elif res.get("live") in ("busy", "timeout", "error"):
             res["message"] = ("NOT FOUND - not saved: OMSGuru did not answer in time. Scan the same packet again "
                               "in a moment")
