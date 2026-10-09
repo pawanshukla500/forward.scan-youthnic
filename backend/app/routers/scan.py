@@ -204,6 +204,7 @@ def void_scan(scan_id: int, reason: str = "", db: Session = Depends(get_db), use
     _event(db, user=user, station="", channel_id=s.channel_id, raw=s.tracking_raw, norm=s.tracking_norm,
            outcome="VOIDED", message=msg, scan_id=s.id)
     payload = {"id": s.id, "channel_id": s.channel_id, "tracking": s.tracking_raw}
+    db.info["delete_reason"] = msg  # the full scan is kept in deleted_scans
     db.delete(s)
     db.commit()
     cache.invalidate(payload["channel_id"])
