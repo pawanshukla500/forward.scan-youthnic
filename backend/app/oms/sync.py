@@ -42,7 +42,7 @@ from ..services.realtime import hub
 from ..services.scanning import find_orders, reverify_scans
 from ..timeutil import day_bounds_utc, today_dispatch_date, utcnow
 from datetime import timezone
-from .client import OmsBusy, OmsClient, OmsError, OmsThrottled
+from .client import OmsAuthError, OmsBusy, OmsClient, OmsDownError, OmsError, OmsThrottled
 from .mapping import ChannelMatcher, normalize_image_url, normalize_sku_key, normalize_tracking, parse_order_row
 from .mock import MockOmsClient
 
@@ -86,6 +86,9 @@ CATCH_UP_AFTER_SECONDS = 5 * 60
 # While OMSGuru is down only the new-AWB sync keeps knocking, this often at most (other jobs wait; scans answer
 # from the stored orders without asking OMSGuru live).
 DOWN_PROBE_SECONDS = 30
+# What counts as "OMSGuru is unavailable" (outage mode, banner, incident history). Throttling (429) is not.
+OUTAGE_KINDS = ("down", "key_refused")
+INCIDENTS_KEPT = 30
 AUDIT_KEEP_DAYS = 10  # results kept for Admin / Pending
 # Status groups that belong in the working set (see mapping.status_group).
 WORKING_SET = ("OPEN",)
@@ -260,6 +263,9 @@ class SyncEngine:
             "invoices_cursor": _get_state("invoices_cursor"),
             "open_orders_progress": _get_state("open_orders_progress"),
             "logs": logs,
+            "omsguru": {**(_get_state("omsguru_status") or {"state": "ok"}),
+                        "down_since": self.omsguru_down_since,
+                        "incidents": list(reversed(_get_state("omsguru_incidents") or []))[:10]},
             "live_lookup": {"enabled": settings.live_lookup, "timeout_seconds": settings.live_timeout_seconds,
                             "outcomes": dict(self.live_stats), "methods": self._lookup_summary(chan_names)},
             "crosscheck": _get_state("crosscheck"),
@@ -299,6 +305,8 @@ class SyncEngine:
             "invoices_failing": inv.last_ok is False or bool(self.omsguru_down_since),
             # since when OMSGuru is not answering (unix seconds) - their outage: the banner says so
             "omsguru_down_since": self.omsguru_down_since,
+            # ok / down (their outage) / key_refused (our API key is not accepted any more)
+            "omsguru_state": (_get_state("omsguru_status") or {}).get("state", "ok"),
             "invoices_error": inv.last_message if inv.last_ok is False else "",
             "waiting_for_credit": lim.waiting,
             "throttled_total": lim.throttled_total,
@@ -394,6 +402,7 @@ class SyncEngine:
         st.last_started = time.time()
         job = _Job(st)
         ok, msg = True, ""
+        kind = ""  # why it failed: down / key_refused / throttled / error
         cancelled = False
         try:
             msg = await fn(job) or ""
@@ -402,6 +411,8 @@ class SyncEngine:
             raise
         except OmsError as exc:
             ok, msg = False, str(exc)
+            kind = ("key_refused" if isinstance(exc, OmsAuthError) else "down" if isinstance(exc, OmsDownError)
+                    else "throttled" if isinstance(exc, OmsThrottled) else "error")
             log.warning("%s failed: %s", name, exc)
         except Exception as exc:  # noqa: BLE001
             ok, msg = False, f"{type(exc).__name__}: {exc}"
@@ -425,14 +436,38 @@ class SyncEngine:
             try:
                 if self.omsguru_down_since:
                     await _aset("invoices_probe_at", time.time())
-                await self._note_omsguru(ok)
+                await self._note_omsguru(ok, kind, msg)
             except Exception:  # noqa: BLE001 - bookkeeping must never stop the sync loop
                 log.exception("could not record the OMSGuru connection state")
         if not ok:
             # Don't hot-loop a failing job (longer while OMSGuru is down).
             await asyncio.sleep(DOWN_PROBE_SECONDS if self.omsguru_down_since else 15)
 
-    async def _note_omsguru(self, ok: bool) -> None:
+    async def _record_omsguru(self, ok: bool, kind: str, msg: str) -> None:
+        """Connection status (Admin -> OMSGuru connection, banners, /api/health) and the incident history: one entry
+        per stretch of "down" or "key refused", with start, end and OMSGuru's last error."""
+        now = time.time()
+        st = await _aget("omsguru_status") or {}
+        state = "ok" if ok else kind
+        if state != st.get("state"):
+            inc = await _aget("omsguru_incidents") or []
+            if inc and inc[-1].get("end") is None:
+                inc[-1]["end"] = now
+            if state in OUTAGE_KINDS:
+                inc.append({"kind": state, "start": now, "end": None, "error": msg[:200]})
+                log.warning("OMSGuru connection: %s - %s", state, msg)
+            elif st.get("state") in OUTAGE_KINDS:
+                log.warning("OMSGuru connection: working again")
+            await _aset("omsguru_incidents", inc[-INCIDENTS_KEPT:])
+            st = {"state": state, "since": now, "last_ok": st.get("last_ok")}
+        st["checked_at"] = now
+        if ok:
+            st["last_ok"], st["last_error"] = now, ""
+        else:
+            st["last_error"] = msg[:300]
+        await _aset("omsguru_status", st)
+
+    async def _note_omsguru(self, ok: bool, kind: str = "down", msg: str = "") -> None:
         """The new-AWB sync is the pulse of the OMSGuru connection. Remember (in the database, so a restart does not
         forget) when it started failing; when it works again after CATCH_UP_AFTER_SECONDS or more, catch up in full.
 
@@ -440,6 +475,9 @@ class SyncEngine:
         first successful run reads from where it stopped up to now; the open-order refresh and the order-trail audit
         keep their page and continue. The catch-up adds a deep check on top: every invoice of the last days AWB by AWB
         (missing ones added), the whole Packed / Ready-to-ship list and the cancellations, all at once."""
+        if not ok and kind not in OUTAGE_KINDS:
+            return  # throttled / a rejected request: OMSGuru is there - not an outage
+        await self._record_omsguru(ok, kind, msg)
         since = await _aget("omsguru_down_since")
         if not ok:
             if not since:

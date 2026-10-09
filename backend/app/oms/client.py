@@ -40,6 +40,14 @@ class OmsThrottled(OmsError):
     pass
 
 
+class OmsAuthError(OmsError):
+    """OMSGuru is working but refused our API key (401 "Invalid API Details"): the token / client id must change."""
+
+
+class OmsDownError(OmsError):
+    """OMSGuru did not answer properly (5xx, no connection, timeout): an outage on their side."""
+
+
 class OmsBusy(OmsError):
     """A live (scan-time) call could not run right now; the caller falls back to the local copy."""
 
@@ -190,8 +198,10 @@ class OmsClient:
                 except httpx.HTTPError as exc:
                     self.state.errors_total += 1
                     self.state.last_error = f"{type(exc).__name__}: {exc}"
-                    if attempt >= max_attempts:
-                        raise OmsError(self.state.last_error) from exc
+                    if attempt >= min(max_attempts, SERVER_ERROR_TRIES):
+                        self.state.last_error = (f"OMSGuru is not answering ({type(exc).__name__}) - an outage on "
+                                                 "OMSGuru's side or the network; the sync retries by itself")
+                        raise OmsDownError(self.state.last_error) from exc
                     retry_in = min(60, 2 ** attempt)
                 else:
                     if resp.status_code == 429 or _is_throttle_body(resp):
@@ -267,15 +277,21 @@ class OmsClient:
 
     def _parse(self, resp: httpx.Response, path: str) -> Any:
         if resp.status_code == 401:
-            self.state.last_error = ("401 Unauthorized from OMSGuru - the API key was refused (OMSGURU_API_TOKEN / "
-                                     "OMSGURU_CLIENT_ID changed?) or OMSGuru itself is having an outage")
-            raise OmsError(self.state.last_error)
+            said = ""
+            try:
+                said = str((resp.json() or {}).get("message") or "")
+            except ValueError:
+                pass
+            # OMSGuru answered with its own JSON: it is working, but our key is not accepted any more
+            self.state.last_error = (f"OMSGuru refused our API key (401{': ' + said if said else ''}) - an admin must "
+                                     "update the OMSGuru API token / client id (OMSGURU_API_TOKEN / OMSGURU_CLIENT_ID)")
+            raise OmsAuthError(self.state.last_error)
         if resp.status_code >= 500:
             # their nginx error page is not shown: say what it means
             self.state.errors_total += 1
             self.state.last_error = (f"OMSGuru's server is down (HTTP {resp.status_code}) - an outage on OMSGuru's side, "
                                      "not in this app; the sync retries by itself")
-            raise OmsError(self.state.last_error)
+            raise OmsDownError(self.state.last_error)
         if resp.status_code >= 400:
             self.state.errors_total += 1
             self.state.last_error = f"HTTP {resp.status_code} on {path}: {resp.text[:200]}"

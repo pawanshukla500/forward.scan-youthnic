@@ -197,7 +197,7 @@ def test_after_an_omsguru_outage_the_sync_catches_up_in_full(env, monkeypatch):
     cursor_before = sm._get_state("invoices_cursor")
 
     async def down(job):
-        raise sm.OmsError("OMSGuru's server is down (HTTP 503)")
+        raise sm.OmsDownError("OMSGuru's server is down (HTTP 503)")
 
     monkeypatch.setattr(eng, "sync_invoices", down)
     run(eng._guard("invoices", eng.sync_invoices))
@@ -316,3 +316,36 @@ def test_omsguru_5xx_is_given_up_after_a_few_tries(monkeypatch):
     calls, err = asyncio.run(go())
     assert len(calls) == client_module.SERVER_ERROR_TRIES and "OMSGuru's server is down" in err
     assert sum(sleeps) < 10  # seconds, not minutes
+
+
+def test_the_omsguru_connection_monitor_tells_down_key_refused_and_busy_apart(env, monkeypatch):
+    """9 Oct 2026: OMSGuru answered 503 (down) from 11:43, then 401 "Invalid API Details" (working, our key refused)."""
+    c, eng = env
+    for k in ("omsguru_status", "omsguru_incidents", "omsguru_down_since"):
+        sm._set_state(k, None)
+    monkeypatch.setattr(sm, "DOWN_PROBE_SECONDS", 0)
+
+    def failing(exc):
+        async def fn(job):
+            raise exc
+        return fn
+
+    run(eng._guard("invoices", failing(sm.OmsThrottled("API Throttled"))))
+    assert not sm._get_state("omsguru_status") and not eng.omsguru_down_since  # busy is not an outage
+    run(eng._guard("invoices", failing(sm.OmsDownError("OMSGuru's server is down (HTTP 503)"))))
+    assert sm._get_state("omsguru_status")["state"] == "down" and eng.omsguru_down_since
+    run(eng._guard("invoices", failing(sm.OmsAuthError("OMSGuru refused our API key (401: Invalid API Details)"))))
+    st = sm._get_state("omsguru_status")
+    assert st["state"] == "key_refused" and "Invalid API Details" in st["last_error"]
+    assert eng.brief()["omsguru_state"] == "key_refused"
+    inc = sm._get_state("omsguru_incidents")
+    assert [i["kind"] for i in inc] == ["down", "key_refused"] and inc[0]["end"] and inc[1]["end"] is None
+    status = c.get("/api/admin/sync").json()["omsguru"]
+    assert status["state"] == "key_refused" and status["incidents"][0]["kind"] == "key_refused"
+    sm._set_state("omsguru_down_since", time.time() - 30)  # short: no catch-up needed in this test
+    run(eng._guard("invoices", eng.sync_invoices))  # the new token works
+    st = sm._get_state("omsguru_status")
+    assert st["state"] == "ok" and st["last_ok"] and not eng.omsguru_down_since
+    assert sm._get_state("omsguru_incidents")[-1]["end"] is not None
+    assert c.get("/api/health").json()["omsguru"] in ("ok", None)
+

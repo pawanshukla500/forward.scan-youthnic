@@ -244,8 +244,10 @@ def test_an_omsguru_outage_is_reported_as_theirs_not_as_our_key():
     async def go():
         c = OmsClient()
         try:
-            for status, words in ((503, "OMSGuru's server is down"), (401, "OMSGuru itself is having an outage")):
-                resp = httpx.Response(status, text="<html>503 Service Temporarily Unavailable</html>",
+            for status, words in ((503, "OMSGuru's server is down"), (401, "refused our API key")):
+                body = ('{"error":-1,"message":"Invalid API Details","data":""}' if status == 401
+                        else "<html>503 Service Temporarily Unavailable</html>")
+                resp = httpx.Response(status, text=body,
                                       request=httpx.Request("GET", "https://oms.test/order_api/list_channels"))
                 with pytest.raises(OmsError) as e:
                     c._parse(resp, "/order_api/list_channels")

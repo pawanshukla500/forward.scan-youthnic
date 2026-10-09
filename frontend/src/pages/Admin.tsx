@@ -38,6 +38,62 @@ const TABS: [Tab, string][] = [
   ["sync", "OMSGuru sync"],
 ];
 
+
+interface OmsIncident {
+  kind: "down" | "key_refused";
+  start: number;
+  end: number | null;
+  error?: string;
+}
+
+/** OMSGuru connection as the sync sees it, with the history of outages / refused keys. */
+function OmsConnectionCard({ o }: { o: { state?: string; since?: number; last_ok?: number; checked_at?: number; last_error?: string; incidents?: OmsIncident[] } }) {
+  const t = (x?: number | null) =>
+    x ? new Date(x * 1000).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "-";
+  const mins = (a: number, b: number | null) => {
+    const m = Math.round(((b ?? Date.now() / 1000) - a) / 60);
+    return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+  };
+  const meta =
+    o.state === "down"
+      ? { label: "OMSGuru is down (their outage)", cls: "bg-crit-wash text-crit-ink" }
+      : o.state === "key_refused"
+        ? { label: "Our API key is refused - update the OMSGuru API token", cls: "bg-crit-wash text-crit-ink" }
+        : { label: "Working", cls: "bg-good-wash text-good-ink" };
+  const kindLabel = (k: string) => (k === "key_refused" ? "API key refused" : "OMSGuru down");
+  return (
+    <Card className="mt-4 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold">OMSGuru connection</h2>
+        <span className={cx("rounded-md px-2 py-0.5 text-xs font-semibold", meta.cls)}>{meta.label}</span>
+      </div>
+      <div className="mt-1 text-xs text-muted">
+        {o.state && o.state !== "ok" ? `Since ${t(o.since)} (${mins(o.since ?? 0, null)})` : `Last successful call ${t(o.last_ok)}`} · checked {t(o.checked_at)}
+      </div>
+      {o.last_error && <div className="mt-1 text-xs text-crit-ink">{o.last_error}</div>}
+      <div className="mt-3 text-xs font-medium text-ink-2">Recent outages</div>
+      {o.incidents && o.incidents.length > 0 ? (
+        <ul className="mt-1 space-y-1 text-xs">
+          {o.incidents.map((x, i) => (
+            <li key={i} className="flex flex-wrap gap-x-2">
+              <b className={x.end ? "text-ink-2" : "text-crit-ink"}>{kindLabel(x.kind)}</b>
+              <span className="tnum">
+                {t(x.start)} - {x.end ? t(x.end) : "now"} ({mins(x.start, x.end)})
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-1 text-xs text-muted">None recorded.</div>
+      )}
+      <div className="mt-2 text-xs text-muted">
+        While OMSGuru is unavailable, scans use the stored orders and the sync checks every 30 s. When it works again the app continues from
+        where it stopped and re-checks the last 7 days, so nothing is missed.
+      </div>
+    </Card>
+  );
+}
+
 export default function Admin() {
   const [tab, setTab] = useState<Tab>("overview");
   const [toast, setToast] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
@@ -1064,6 +1120,7 @@ interface SyncStatus {
   };
   logs: { job: string; started_at: string; ok: boolean; calls: number; records: number; message: string }[];
   live_lookup?: { enabled: boolean; timeout_seconds: number; outcomes: Record<string, number>; methods?: LookupMethod[] };
+  omsguru?: { state?: string; since?: number; last_ok?: number; checked_at?: number; last_error?: string; incidents?: OmsIncident[] };
   crosscheck?: CrossCheck | null;
   exit_check_pending?: number;
 }
@@ -1497,6 +1554,8 @@ function Sync({ notify }: { notify: Notify }) {
           {s.limiter.last_error && <div className="mt-1 text-xs text-crit-ink">{s.limiter.last_error}</div>}
         </Card>
       </div>
+
+      {s.omsguru && <OmsConnectionCard o={s.omsguru} />}
 
       {s.live_lookup && (
         <Card className="p-4">
