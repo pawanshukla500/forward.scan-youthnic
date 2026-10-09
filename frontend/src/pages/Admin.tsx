@@ -305,8 +305,18 @@ function Overview({ notify, go }: { notify: Notify; go: (t: Tab) => void }) {
             <SystemCard
               icon={<Zap className="size-5" />}
               title="OMSGuru API"
-              state={starving ? "Throttled" : lim?.last_error ? "Errors" : "Operational"}
-              tone={starving ? "warn" : lim?.last_error ? "crit" : "good"}
+              state={
+                s.omsguru?.state === "down"
+                  ? "OMSGuru down"
+                  : s.omsguru?.state === "key_refused"
+                    ? "Key refused"
+                    : starving
+                      ? "Throttled"
+                      : lim?.last_error
+                        ? "Errors"
+                        : "Operational"
+              }
+              tone={s.omsguru?.state === "down" || s.omsguru?.state === "key_refused" || lim?.last_error ? "crit" : starving ? "warn" : "good"}
               meta={`${Math.floor(lim!.remaining_estimated)} of ${lim!.limit} credits free · ${lim!.calls_total} calls`}
             >
               <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-line" role="meter" aria-valuenow={credPct} aria-valuemin={0} aria-valuemax={100} aria-label="API credits free">
@@ -1116,6 +1126,9 @@ interface SyncStatus {
     throttled_total: number;
     errors_total: number;
     last_error: string;
+    resolved_error?: string;
+    last_error_at?: number | null;
+    last_ok_at?: number | null;
     waiting_for_credit: boolean;
   };
   logs: { job: string; started_at: string; ok: boolean; calls: number; records: number; message: string }[];
@@ -1551,7 +1564,14 @@ function Sync({ notify }: { notify: Notify }) {
             {s.limiter.calls_total} calls · {s.limiter.throttled_total} throttled · {s.limiter.errors_total} errors · keeps {s.limiter.reserve} in reserve
             {s.limiter.waiting_for_credit && <b className="text-warn-ink"> · waiting for credits</b>}
           </div>
-          {s.limiter.last_error && <div className="mt-1 text-xs text-crit-ink">{s.limiter.last_error}</div>}
+          {s.limiter.last_error ? (
+            <div className="mt-1 text-xs text-crit-ink">{s.limiter.last_error}</div>
+          ) : s.limiter.resolved_error ? (
+            <div className="mt-1 text-xs text-muted">
+              Last error{s.limiter.last_error_at ? ` at ${new Date(s.limiter.last_error_at * 1000).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}` : ""} - resolved, calls succeed again:{" "}
+              {s.limiter.resolved_error}
+            </div>
+          ) : null}
         </Card>
       </div>
 

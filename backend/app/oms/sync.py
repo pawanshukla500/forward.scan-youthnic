@@ -310,7 +310,7 @@ class SyncEngine:
             "invoices_error": inv.last_message if inv.last_ok is False else "",
             "waiting_for_credit": lim.waiting,
             "throttled_total": lim.throttled_total,
-            "last_error": lim.last_error,
+            "last_error": lim.current_error(),  # only while nothing has succeeded since
             # pending orders differ from OMSGuru's own report even after an early re-refresh
             "crosscheck_off": check.get("ok") is False and not check.get("retry"),
         }
