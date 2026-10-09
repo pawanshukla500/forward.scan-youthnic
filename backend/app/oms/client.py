@@ -28,6 +28,10 @@ log = logging.getLogger("oms.client")
 REFILL_SECONDS = 5.0
 
 
+# OMSGuru answering 5xx: try this often (2 + 4 s apart), then report it - the sync's outage mode takes over instead
+# of one job retrying for minutes.
+SERVER_ERROR_TRIES = 3
+
 class OmsError(Exception):
     pass
 
@@ -199,7 +203,7 @@ class OmsClient:
                         retry_after = _int(resp.headers.get("retry-after"), 5)
                         retry_in = min(120.0, retry_after + REFILL_SECONDS * (2 ** min(attempt - 1, 4)) * random.uniform(0.5, 1.0))
                         log.info("OMSGuru throttled on %s, retrying in %.0fs", path, retry_in)
-                    elif resp.status_code >= 500 and attempt < max_attempts:
+                    elif resp.status_code >= 500 and attempt < min(max_attempts, SERVER_ERROR_TRIES):
                         self.state.errors_total += 1
                         self.state.last_error = f"HTTP {resp.status_code} on {path}"
                         retry_in = min(60, 2 ** attempt)
