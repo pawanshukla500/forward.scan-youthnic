@@ -346,7 +346,7 @@ export function ShipmentCard({
       ) : (
         <p className="shipment-empty">
           {res.code === "NOT_IN_OMS"
-            ? "Saved. OMSGuru is being checked now - this shipment turns green (or raises an alert) automatically once the order syncs."
+            ? "NOT saved - OMSGuru has no order with this barcode yet. Keep the packet aside and scan it again in a few minutes."
             : res.severity === "error"
               ? "Not saved. Put this packet aside for a supervisor."
               : "No order details for this barcode."}

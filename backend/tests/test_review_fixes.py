@@ -235,3 +235,22 @@ def test_only_successful_scans_are_counted(eng):
             assert mk.dispatch_date == today_dispatch_date()
         d2 = dash()
         assert d2["scanned"] == d1["scanned"] and d2["marked"] == d1["marked"] + 1
+
+
+def test_an_omsguru_outage_is_reported_as_theirs_not_as_our_key():
+    """9 Oct 2026 11:43: client.omsguru.com answered 401, then 503 (nginx page) for everyone."""
+    from app.oms.client import OmsError
+
+    async def go():
+        c = OmsClient()
+        try:
+            for status, words in ((503, "OMSGuru's server is down"), (401, "OMSGuru itself is having an outage")):
+                resp = httpx.Response(status, text="<html>503 Service Temporarily Unavailable</html>",
+                                      request=httpx.Request("GET", "https://oms.test/order_api/list_channels"))
+                with pytest.raises(OmsError) as e:
+                    c._parse(resp, "/order_api/list_channels")
+                assert words in str(e.value) and "<html>" not in str(e.value)
+        finally:
+            await c.aclose()
+
+    asyncio.run(go())

@@ -263,7 +263,14 @@ class OmsClient:
 
     def _parse(self, resp: httpx.Response, path: str) -> Any:
         if resp.status_code == 401:
-            self.state.last_error = "401 Unauthorized - check OMSGURU_API_TOKEN / OMSGURU_CLIENT_ID"
+            self.state.last_error = ("401 Unauthorized from OMSGuru - the API key was refused (OMSGURU_API_TOKEN / "
+                                     "OMSGURU_CLIENT_ID changed?) or OMSGuru itself is having an outage")
+            raise OmsError(self.state.last_error)
+        if resp.status_code >= 500:
+            # their nginx error page is not shown: say what it means
+            self.state.errors_total += 1
+            self.state.last_error = (f"OMSGuru's server is down (HTTP {resp.status_code}) - an outage on OMSGuru's side, "
+                                     "not in this app; the sync retries by itself")
             raise OmsError(self.state.last_error)
         if resp.status_code >= 400:
             self.state.errors_total += 1
