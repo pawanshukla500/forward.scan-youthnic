@@ -10,7 +10,7 @@ from sqlalchemy import String, and_, case, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..models import MARKED_SHIPPED_FLAG, Channel, Manifest, OmsOrder, Scan, ScanEvent, SkuPhoto, User
+from ..models import BULK_SCAN_FLAG, MARKED_SHIPPED_FLAG, Channel, Manifest, OmsOrder, Scan, ScanEvent, SkuPhoto, User
 from ..oms.mapping import normalize_sku_key, normalize_tracking
 from ..timeutil import dispatch_date_for, iso_utc, to_local, today_dispatch_date, utcnow
 from . import awb_shapes, cache
@@ -345,8 +345,10 @@ def _invalid(db: Session, *, user: User, station: str, channel_id: int, raw: str
 
 
 def _is_marked(scan: Scan | None) -> bool:
-    """Recorded by the one-time "already shipped in OMSGuru" mark (services/marking.py), not by a packer."""
-    return bool(scan is not None and MARKED_SHIPPED_FLAG in (scan.flags or "").split(","))
+    """Not a packer's scan: the one-time "already shipped in OMSGuru" mark or an admin's bulk scan
+    (services/marking.py). A real scan of the same packet replaces it - OK, never "Duplicate - set aside"."""
+    flags = (scan.flags or "").split(",") if scan is not None else []
+    return MARKED_SHIPPED_FLAG in flags or BULK_SCAN_FLAG in flags
 
 
 # A scan of the same AWB by the same packer in the same channel within this many seconds is their own scan
@@ -500,10 +502,12 @@ def process_scan(
         # re-read from the database (not the session's copy) and lock it: another station may replace it meanwhile
         mark = db.get(Scan, marked_id, populate_existing=True, with_for_update={"of": Scan})
         if mark is not None and _is_marked(mark):
+            what = ("admin bulk scan" if BULK_SCAN_FLAG in (mark.flags or "").split(",")
+                    else "'shipped in OMSGuru' mark")
             _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=mark.tracking_norm,
                    outcome="MARK_REPLACED", scan_id=mark.id,
-                   message=f"Real scan replaces the 'shipped in OMSGuru' mark dated {mark.dispatch_date:%d-%b-%Y}")
-            db.info["delete_reason"] = "One-time mark replaced by a real scan"
+                   message=f"Real scan replaces the {what} dated {mark.dispatch_date:%d-%b-%Y}")
+            db.info["delete_reason"] = f"{what[0].upper() + what[1:]} replaced by a real scan"
             db.delete(mark)
             db.flush()
     scan = Scan(

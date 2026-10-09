@@ -24,9 +24,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..models import MARKED_SHIPPED_FLAG, SYSTEM_SHIPPED_USERNAME, Channel, OmsOrder, Scan, User
+from ..models import (BULK_SCAN_FLAG, BULK_SCAN_USERNAME, MARKED_SHIPPED_FLAG, SYSTEM_SHIPPED_USERNAME, Channel,
+                      OmsOrder, Scan, User)
 from ..security import hash_password
-from ..timeutil import dispatch_date_for, to_local
+from ..timeutil import day_bounds_utc, dispatch_date_for, to_local, utcnow
 from . import cache, reconcile
 from .scanning import _event, _snapshot
 
@@ -90,6 +91,55 @@ def mark(db: Session, found: list[tuple[reconcile.AwbRec, OmsOrder]]) -> int:
             done += 1
         except IntegrityError:
             continue  # scanned by a station a moment ago - nothing to mark
+    db.commit()
+    cache.clear()
+    return done
+
+
+# ---- admin bulk scan (owner-approved; backend/bulk_scan.py) -----------------------------------------------------
+
+BULK_STATION = "Bulk scan (admin)"
+
+
+def bulk_user(db: Session) -> User:
+    """The account bulk scans are recorded under (reports show "Bulk scan (admin)"). It can never sign in."""
+    u = db.scalar(select(User).where(User.username == BULK_SCAN_USERNAME))
+    if u is None:
+        u = User(username=BULK_SCAN_USERNAME, full_name="Bulk scan (admin)", email="",
+                 password_hash=hash_password(secrets.token_urlsafe(32)), role="scanner", is_active=False)
+        db.add(u)
+        db.flush()
+    return u
+
+
+def bulk_candidates(db: Session, channel_id: int, day: date) -> list[reconcile.AwbRec]:
+    """The AWBs of [day] (AWB generation day) still pending in this sales channel."""
+    a, b = day_bounds_utc(day)
+    return [r for r in reconcile.collect(db, start=a, end=b, channel_id=channel_id) if r.bucket() == "pending"]
+
+
+def bulk_scan(db: Session, recs: list[reconcile.AwbRec], day: date, requested_by: str) -> int:
+    """Record each pending AWB as a successful scan of [day], counted like a manual scan, under the bulk account.
+    A packer scanning one of these packets later replaces it (OK); a station's scan a moment ago wins."""
+    user = bulk_user(db)
+    msg = (f"Bulk scan by admin ({requested_by}) - counted as scanned, not scanned at a station; a real scan of this "
+           "packet replaces it")[:300]
+    now, done = utcnow(), 0
+    for r in recs:
+        o = db.get(OmsOrder, r.order_ids[0])
+        try:
+            with db.begin_nested():
+                s = Scan(tracking_norm=r.awb, tracking_raw=((o.tracking_raw if o else "") or r.awb)[:160], dispatch_date=day,
+                         scanned_at=now, user_id=user.id, station=BULK_STATION, channel_id=r.channel_id,
+                         order_id=o.id if o else None, order_json=_snapshot(o) if o else "", result="OK",
+                         flags=BULK_SCAN_FLAG, message=msg)
+                db.add(s)
+                db.flush()
+                _event(db, user=user, station=BULK_STATION, channel_id=r.channel_id, raw=s.tracking_raw, norm=r.awb,
+                       outcome="BULK_SCAN", message=msg, scan_id=s.id)
+            done += 1
+        except IntegrityError:
+            continue  # scanned at a station a moment ago
     db.commit()
     cache.clear()
     return done
