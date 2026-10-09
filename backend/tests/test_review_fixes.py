@@ -256,3 +256,34 @@ def test_an_omsguru_outage_is_reported_as_theirs_not_as_our_key():
             await c.aclose()
 
     asyncio.run(go())
+
+
+def test_a_resolved_omsguru_error_is_not_shown_as_current():
+    """9 Oct 2026: Admin kept showing '401 Invalid API Details' for hours after OMSGuru accepted the key again."""
+    from app.oms.client import LimiterState
+
+    st = LimiterState()
+    st.note_error("OMSGuru refused our API key (401: Invalid API Details)")
+    snap = st.snapshot()
+    assert snap["last_error"].startswith("OMSGuru refused") and not snap["resolved_error"]
+    st.note_ok()  # a later call succeeded
+    snap = st.snapshot()
+    assert snap["last_error"] == "" and snap["resolved_error"].startswith("OMSGuru refused")
+    assert snap["last_error_at"] and snap["last_ok_at"] >= snap["last_error_at"]
+    st.note_error("HTTP 503 on /order_api/invoices")  # and failing again: current again
+    assert st.snapshot()["last_error"].startswith("HTTP 503")
+
+
+def test_a_good_answer_marks_the_connection_ok(monkeypatch):
+    async def go():
+        c = OmsClient()
+        try:
+            c.state.note_error("HTTP 503 on /order_api/invoices")
+            resp = httpx.Response(200, json={"data": []}, request=httpx.Request("POST", "https://oms.test/order_api/invoices"))
+            c._parse(resp, "/order_api/invoices")
+            return c.state.snapshot()
+        finally:
+            await c.aclose()
+
+    snap = asyncio.run(go())
+    assert snap["last_error"] == "" and "503" in snap["resolved_error"]

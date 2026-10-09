@@ -97,6 +97,13 @@ class LimiterState:
     throttled_total: int = 0
     errors_total: int = 0
     last_error: str = ""
+    last_error_at: float = 0.0
+    # last call OMSGuru answered properly: an error older than this is resolved, not shown as current
+    last_ok_at: float = 0.0
+    # order of events (a clock tick can hold an error AND a success): which came last decides "current"
+    _event_no: int = 0
+    _error_no: int = 0
+    _ok_no: int = 0
     last_call_at: float = 0.0
     waiting: bool = False
     history: list[tuple[float, str, int]] = field(default_factory=list)  # (ts, path, status)
@@ -107,7 +114,23 @@ class LimiterState:
         refilled = (time.time() - self.observed_at) / REFILL_SECONDS
         return min(float(self.limit), self.remaining + refilled)
 
+    def note_error(self, msg: str) -> str:
+        self._event_no += 1
+        self._error_no = self._event_no
+        self.last_error, self.last_error_at = msg, time.time()
+        return msg
+
+    def note_ok(self) -> None:
+        self._event_no += 1
+        self._ok_no = self._event_no
+        self.last_ok_at = time.time()
+
+    def current_error(self) -> str:
+        """The last error only while nothing has succeeded since (Admin showed a resolved 401 for hours)."""
+        return self.last_error if self.last_error and self._error_no > self._ok_no else ""
+
     def snapshot(self) -> dict[str, Any]:
+        current = self.current_error()
         return {
             "limit": self.limit,
             "remaining_reported": self.remaining,
@@ -116,7 +139,10 @@ class LimiterState:
             "calls_total": self.calls_total,
             "throttled_total": self.throttled_total,
             "errors_total": self.errors_total,
-            "last_error": self.last_error,
+            "last_error": current,  # empty once a later call succeeded
+            "resolved_error": self.last_error if self.last_error and not current else "",
+            "last_error_at": self.last_error_at or None,
+            "last_ok_at": self.last_ok_at or None,
             "last_call_at": self.last_call_at or None,
             "waiting_for_credit": self.waiting,
             "recent": [{"ts": t, "path": p, "status": s} for t, p, s in self.history[-15:]],
@@ -197,10 +223,10 @@ class OmsClient:
                     resp = await self._send(method, path, form, params, timeout=None)
                 except httpx.HTTPError as exc:
                     self.state.errors_total += 1
-                    self.state.last_error = f"{type(exc).__name__}: {exc}"
+                    self.state.note_error(f"{type(exc).__name__}: {exc}")
                     if attempt >= min(max_attempts, SERVER_ERROR_TRIES):
-                        self.state.last_error = (f"OMSGuru is not answering ({type(exc).__name__}) - an outage on "
-                                                 "OMSGuru's side or the network; the sync retries by itself")
+                        self.state.note_error((f"OMSGuru is not answering ({type(exc).__name__}) - an outage on "
+                                                 "OMSGuru's side or the network; the sync retries by itself"))
                         raise OmsDownError(self.state.last_error) from exc
                     retry_in = min(60, 2 ** attempt)
                 else:
@@ -215,7 +241,7 @@ class OmsClient:
                         log.info("OMSGuru throttled on %s, retrying in %.0fs", path, retry_in)
                     elif resp.status_code >= 500 and attempt < min(max_attempts, SERVER_ERROR_TRIES):
                         self.state.errors_total += 1
-                        self.state.last_error = f"HTTP {resp.status_code} on {path}"
+                        self.state.note_error(f"HTTP {resp.status_code} on {path}")
                         retry_in = min(60, 2 ** attempt)
                     else:
                         return self._parse(resp, path)
@@ -243,7 +269,7 @@ class OmsClient:
                 resp = await self._send(method, path, form, params, timeout=LIVE_HTTP_TIMEOUT)
             except httpx.HTTPError as exc:
                 self.state.errors_total += 1
-                self.state.last_error = f"{type(exc).__name__}: {exc}"
+                self.state.note_error(f"{type(exc).__name__}: {exc}")
                 raise OmsBusy(self.state.last_error) from exc
             if resp.status_code == 429 or _is_throttle_body(resp):
                 self._mark_throttled()
@@ -283,23 +309,25 @@ class OmsClient:
             except ValueError:
                 pass
             # OMSGuru answered with its own JSON: it is working, but our key is not accepted any more
-            self.state.last_error = (f"OMSGuru refused our API key (401{': ' + said if said else ''}) - an admin must "
-                                     "update the OMSGuru API token / client id (OMSGURU_API_TOKEN / OMSGURU_CLIENT_ID)")
+            self.state.note_error((f"OMSGuru refused our API key (401{': ' + said if said else ''}) - an admin must "
+                                     "update the OMSGuru API token / client id (OMSGURU_API_TOKEN / OMSGURU_CLIENT_ID)"))
             raise OmsAuthError(self.state.last_error)
         if resp.status_code >= 500:
             # their nginx error page is not shown: say what it means
             self.state.errors_total += 1
-            self.state.last_error = (f"OMSGuru's server is down (HTTP {resp.status_code}) - an outage on OMSGuru's side, "
-                                     "not in this app; the sync retries by itself")
+            self.state.note_error((f"OMSGuru's server is down (HTTP {resp.status_code}) - an outage on OMSGuru's side, "
+                                     "not in this app; the sync retries by itself"))
             raise OmsDownError(self.state.last_error)
         if resp.status_code >= 400:
             self.state.errors_total += 1
-            self.state.last_error = f"HTTP {resp.status_code} on {path}: {resp.text[:200]}"
+            self.state.note_error(f"HTTP {resp.status_code} on {path}: {resp.text[:200]}")
             raise OmsError(self.state.last_error)
         try:
-            return resp.json()
+            data = resp.json()
+            self.state.note_ok()
+            return data
         except ValueError as exc:
-            self.state.last_error = f"Non-JSON response from {path}"
+            self.state.note_error(f"Non-JSON response from {path}")
             raise OmsError(self.state.last_error) from exc
 
     # ---- endpoints -------------------------------------------------------------------------
