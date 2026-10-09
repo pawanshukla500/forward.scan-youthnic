@@ -100,7 +100,7 @@ def test_new_orders_are_not_synced(client):
     i = 11  # still "New" in OMS - not part of the Packed / Ready-to-ship working set
     assert _cached(mock_awb(i)) == 0
     res = scan(client, _ch(i), mock_awb(i))
-    assert res["severity"] == "warning" and res["code"] == "NOT_IN_OMS", res
+    assert res["severity"] == "error" and res["code"] == "NOT_IN_OMS" and "scan" not in res, res
 
 
 def test_order_id_barcode_resolves_to_awb(client):
@@ -111,20 +111,29 @@ def test_order_id_barcode_resolves_to_awb(client):
     assert scan(client, _ch(i), mock_awb(i))["code"] == "DUPLICATE"
 
 
-def test_unverified_then_auto_resolves(client, engine):
+def test_not_found_is_not_saved_and_scans_ok_once_the_order_syncs(client, engine):
+    """User, 9 Oct 2026: only scans that match a synced order of the selected marketplace are saved."""
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import Scan, ScanEvent
+
     eng, _ = engine
     awb = "NEWAWB778899"
     res = scan(client, _ch(0), awb)
-    assert res["severity"] == "warning" and res["code"] == "NOT_IN_OMS"
-    sid = res["scan"]["id"]
+    assert res["severity"] == "error" and res["code"] == "NOT_IN_OMS" and "NOT FOUND - not saved" in res["message"]
+    with session_scope() as db:
+        assert db.scalar(select(Scan.id).where(Scan.tracking_norm == awb)) is None  # not in the scans
+        ev = db.scalar(select(ScanEvent).where(ScanEvent.tracking_norm == awb))
+        assert ev is not None and ev.outcome == "NOT_FOUND"  # but the attempt is on record
     row = {"last_id": 1, "invoice_id": "INV/X/1", "channel": MOCK_CHANNELS[0]["name"], "company": MOCK_CHANNELS[0]["company_name"],
            "shipment_tracker": awb, "shipping_company": "Delhivery", "order_type": "COD", "order_date": int(time.time()),
            "order_items": [{"channel_order_id": "ODNEW1", "channel_sub_order_id": "ODNEW1-1", "sku_code": "X", "qty": 1,
                             "invoice_amount": 100, "status": "Ready to ship"}]}
     eng._apply_rows([row], "invoices")
-    data = client.get("/api/scans", params={"q": awb}).json()
-    s = next(s for s in data["scans"] if s["id"] == sid)
-    assert s["result"] == "OK" and s["order"]["channel_order_id"] == "ODNEW1"
+    again = scan(client, _ch(0), awb)  # the order has synced: the same packet now scans OK and is saved
+    assert again["severity"] == "success" and again["scan"]["result"] == "OK", again
+    assert again["order"]["channel_order_id"] == "ODNEW1"
 
 
 def test_cancelled_after_scan_raises_alert(client, engine):

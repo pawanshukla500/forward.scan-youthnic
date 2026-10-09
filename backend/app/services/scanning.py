@@ -454,6 +454,21 @@ def process_scan(
         if why:
             return _invalid(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm,
                             message=why, code="WRONG_BARCODE")
+        # Not in OMSGuru for any marketplace, also after asking it live. User, 9 Oct 2026: only a scan that matches
+        # a synced order of the selected marketplace goes into the scans - "Not found" is a notification for the
+        # packer, never saved, never counted. The newest AWBs are fetched at once, so the same packet scanned again
+        # in a few minutes can match.
+        msg = ("NOT FOUND - not saved: OMSGuru has no order with this barcode yet. Keep the packet aside and scan it "
+               "again in a few minutes")
+        _event(db, user=user, station=station, channel_id=channel_id, raw=raw, norm=norm, outcome="NOT_FOUND",
+               message=msg)
+        db.commit()
+        if on_unknown:
+            on_unknown()
+        hub.publish("scan_rejected", {"code": "NOT_IN_OMS", "channel_id": channel_id, "tracking": raw,
+                                      "user": user.full_name or user.username, "message": msg})
+        return {"severity": "error", "code": "NOT_IN_OMS", "message": msg, "live": live_info.get("live"),
+                "live_ms": live_info.get("ms")}
 
     awbs = sorted({o.tracking_norm for o in orders if o.tracking_norm})
     if len(awbs) > 1 and norm not in awbs:

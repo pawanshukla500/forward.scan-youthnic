@@ -15,7 +15,7 @@ from sqlalchemy import delete, func, select
 from app import config
 from app.db import SessionLocal, session_scope
 from app.main import app
-from app.models import Channel, Manifest, Scan, ScanEvent, User
+from app.models import Channel, Manifest, OmsOrder, Scan, ScanEvent, User
 from app.oms import sync as sm
 from app.oms.client import OmsBusy, OmsClient
 from app.oms.mock import MOCK_CHANNELS
@@ -36,6 +36,15 @@ def client():
         yield c
 
 
+def _order(awb, channel=CH):
+    """A synced Packed / Ready-to-ship order for [awb]: only scans of synced orders are saved."""
+    with session_scope() as db:
+        if db.scalar(select(OmsOrder.id).where(OmsOrder.tracking_norm == awb)) is None:
+            db.add(OmsOrder(oms_key=f"scal-{awb}", tracking_raw=awb, tracking_norm=awb, channel_id=channel,
+                            channel_label="test", channel_order_id=f"OD{awb}", status_group="OPEN",
+                            awb_generated_at=utcnow()))
+
+
 def scan(c, tracking, channel=CH):
     r = c.post("/api/scan", json={"channel_id": channel, "tracking": tracking})
     assert r.status_code == 200, r.text
@@ -44,12 +53,14 @@ def scan(c, tracking, channel=CH):
 
 def test_full_and_recent_backups_restore_every_scan(client, tmp_path):
     for i in range(3):
-        assert scan(client, f"BKPAWB{i:05d}")["code"] in ("NOT_IN_OMS", "OK")
+        _order(f"BKPAWB{i:05d}")
+        assert scan(client, f"BKPAWB{i:05d}")["code"] == "OK"
     full = backup.run_full()
     assert full["ok"] and full["verify"]["quick_check"] == "ok" and full["verify"]["counts"]["scans"] >= 3
     landed = backup.backup_dir() / "daily" / full["file"]
     assert landed.exists() and (backup.backup_dir() / "monthly" / full["file"]).exists()
 
+    _order("BKPAWB-AFTER")
     scan(client, "BKPAWB-AFTER")  # scanned after the full backup: only the recent copy has it
     recent = backup.run_recent()
     assert recent["ok"] and recent["counts"]["scans"] >= 4
@@ -75,6 +86,9 @@ def test_first_scans_of_the_day_from_several_stations_at_once(client):
     with session_scope() as db:
         uid = db.scalar(select(User.id).where(User.username == "admin"))
         db.merge(Channel(id=990001, name="Race test channel", marketplace="Race", scan_enabled=True))
+    for trial in range(8):
+        for k in range(4):
+            _order(f"RACE{trial:02d}STATION{k}", channel=990001)
     failures = []
     for trial in range(8):
         with session_scope() as db:
@@ -169,11 +183,15 @@ def test_scan_context_is_shared_and_shows_a_new_scan(client):
     before, before_nf = first["stats"]["scanned"], first["stats"]["not_found"]
     again = client.get(url).json()
     assert again["server_time"] == first["server_time"]  # served from the shared answer
-    saved = scan(client, "CTXCACHE00001")["scan"]  # not in OMSGuru: a flagged "Not found", not a counted scan
+    nf = scan(client, "CTXCACHE00001")  # not in OMSGuru: a Not found notification - not saved, not counted
+    assert nf["code"] == "NOT_IN_OMS" and "scan" not in nf
     # (in production an answer is recomputed at most once per CACHE_MIN_INTERVAL; tests run with 0)
     after = client.get(url).json()
-    assert after["server_time"] > saved["scanned_at"]
     assert after["stats"]["not_found"] == before_nf + 1 and after["stats"]["scanned"] == before
+    _order("CTXCACHE00002")
+    saved = scan(client, "CTXCACHE00002")["scan"]  # a synced order: saved and counted
+    later = client.get(url).json()
+    assert later["server_time"] > saved["scanned_at"] and later["stats"]["scanned"] == before + 1
 
 
 def test_cache_computes_once_for_simultaneous_requests():

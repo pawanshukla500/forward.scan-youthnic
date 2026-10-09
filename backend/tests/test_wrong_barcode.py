@@ -5,7 +5,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import func, delete, select
 
 from app.db import SessionLocal, session_scope
 from app.main import app
@@ -96,11 +96,11 @@ def test_route_code_is_rejected_without_a_lookup(env):
     assert not _saved(code)
 
 
-def test_real_looking_awb_that_is_not_in_oms_is_still_accepted(env):
+def test_real_looking_awb_that_is_not_in_oms_is_not_found_and_not_saved(env):
     c, eng = env
     res = _scan(c, eng, "TSTX9999999999")
-    assert res["severity"] == "warning" and res["code"] == "NOT_IN_OMS", res
-    assert _saved("TSTX9999999999")
+    assert res["severity"] == "error" and res["code"] == "NOT_IN_OMS", res
+    assert not _saved("TSTX9999999999")
 
 
 def test_order_id_barcode_of_a_known_order_is_not_a_wrong_barcode(env):
@@ -163,6 +163,28 @@ def test_cleanup_removes_old_wrong_barcode_scans_and_keeps_real_ones(env, monkey
     with SessionLocal() as db:
         ev = db.scalar(select(ScanEvent).where(ScanEvent.tracking_norm == "MPP3EM000000001", ScanEvent.outcome == "VOIDED"))
         assert ev is not None and "wrong barcode" in ev.message
+
+
+def test_cleanup_all_removes_every_saved_not_found_scan(env, monkeypatch):
+    """Since 9 Oct 2026 Not found is never saved; --all removes the ones saved before, AWB-shaped ones too."""
+    import cleanup_wrong_barcodes as cleanup
+    from app.models import User
+    from app.timeutil import today_dispatch_date
+
+    with session_scope() as db:
+        admin = db.scalar(select(User).where(User.username == "admin"))
+        db.add(Scan(tracking_norm="TSTX2222222222", tracking_raw="TSTX2222222222", dispatch_date=today_dispatch_date(),
+                    user_id=admin.id, channel_id=CH_ID, result="UNVERIFIED", flags="NOT_IN_OMS"))
+    monkeypatch.setattr("sys.argv", ["cleanup_wrong_barcodes.py", "--yes", "--days", "1"])
+    cleanup.main()
+    assert _saved("TSTX2222222222")  # without --all only wrong barcodes go
+    monkeypatch.setattr("sys.argv", ["cleanup_wrong_barcodes.py", "--yes", "--all"])
+    cleanup.main()
+    assert not _saved("TSTX2222222222")
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count(Scan.id)).where(Scan.result == "UNVERIFIED")) == 0
+        ev = db.scalar(select(ScanEvent).where(ScanEvent.tracking_norm == "TSTX2222222222", ScanEvent.outcome == "VOIDED"))
+        assert ev is not None and "only verified scans" in ev.message
 
 
 def test_code39_star_wrapper_is_not_a_symbol(env):

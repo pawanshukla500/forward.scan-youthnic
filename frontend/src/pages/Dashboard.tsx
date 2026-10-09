@@ -406,7 +406,7 @@ export default function Dashboard() {
                     <th scope="col" className="px-3 py-2.5 text-right" title="Successful scans only (verified + check). Not found scans are not counted until OMSGuru has the order.">Scanned</th>
                     <th scope="col" className="px-3 py-2.5 text-right">Verified</th>
                     <th scope="col" className="px-3 py-2.5 text-right">Check</th>
-                    <th scope="col" className="px-3 py-2.5 text-right" title="Saved as not found - flagged, NOT counted as scanned; turns into a counted scan by itself when the order syncs">Not found</th>
+                    <th scope="col" className="px-3 py-2.5 text-right" title="Not found attempts - NOT saved, NOT counted as scanned">Not found</th>
                     <th scope="col" className="px-3 py-2.5 text-right">Duplicate</th>
                     <th scope="col" className="px-3 py-2.5 text-right">Wrong bag</th>
                     <th scope="col" className="px-4 py-2.5 text-right sm:px-5">Blocked</th>

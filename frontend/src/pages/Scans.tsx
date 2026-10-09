@@ -347,7 +347,6 @@ export default function Scans() {
                 <option value="OK">Verified</option>
                 <option value="FLAGGED">Flagged / needs review</option>
                 <option value="WARN">Accepted - check</option>
-                <option value="UNVERIFIED">Not found (flagged, not counted)</option>
                 <option value="ALERTS">Alert after scan</option>
               </select>
             </Pick>

@@ -94,17 +94,19 @@ def test_brand_new_invoice_is_found_on_the_spot(env):
     assert res["order"]["channel_order_id"] == "ODLIVE1" and res["live"] == "fresh"
 
 
-def test_order_id_barcode_links_an_unverified_awb(env):
+def test_not_found_awb_is_not_saved_the_order_id_barcode_then_saves_it(env):
     c, eng = env
     # Invoiced long ago, so neither the local copy nor the newest-invoices pull has it.
     eng.client.add_order(_new_order("OLDAWB00042", "ODOLD42", 1, int(time.time()) - 20 * 86400))
     first = scan(c, _ch(1), "OLDAWB00042")
-    assert first["code"] == "NOT_IN_OMS" and "ORDER ID" in first["message"]
-    linked = scan(c, _ch(1), "ODOLD42")
-    assert linked["severity"] == "success" and linked["code"] == "LINKED", linked
-    assert linked["scan"]["id"] == first["scan"]["id"] and linked["scan"]["result"] == "OK"
+    assert first["code"] == "NOT_IN_OMS" and first["severity"] == "error" and "ORDER ID" in first["message"]
+    assert "scan" not in first  # Not found is a notification only - nothing saved
+    by_order = scan(c, _ch(1), "ODOLD42")  # OMSGuru finds the order by its id: saved under its AWB, verified
+    assert by_order["severity"] == "success" and by_order["scan"]["tracking_norm"] == "OLDAWB00042", by_order
+    assert by_order["scan"]["result"] == "OK"
     # and scanning either barcode again is now a duplicate
     assert scan(c, _ch(1), "ODOLD42")["code"] == "DUPLICATE"
+    assert scan(c, _ch(1), "OLDAWB00042")["code"] == "DUPLICATE"
 
 
 def test_busy_api_falls_back_to_local_copy(env):
