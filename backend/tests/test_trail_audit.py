@@ -184,3 +184,44 @@ def test_restore_runs_the_deep_audit_at_once(env, monkeypatch):
     assert len(sm._get_state("trail_audit")["days"]) == min(sm.AUDIT_DEEP_DAYS, sm.settings.retain_orders_days)
     assert not sm._get_state("trail_audit_force_deep")
     assert sm._get_state("trail_audit_deep_on") == today_dispatch_date().isoformat()
+
+
+def test_after_an_omsguru_outage_the_sync_catches_up_in_full(env, monkeypatch):
+    """9 Oct 2026: OMSGuru was down from 11:43. The new-AWB cursor only moves after a full window, so the first run
+    afterwards reads from where it stopped; on top, a deep 7-day order check, a fresh open-order list and a
+    cancellation sweep start at once."""
+    _, eng = env
+    from app.models import SyncLog
+
+    sm._set_state("omsguru_down_since", None)
+    cursor_before = sm._get_state("invoices_cursor")
+
+    async def down(job):
+        raise sm.OmsError("OMSGuru's server is down (HTTP 503)")
+
+    monkeypatch.setattr(eng, "sync_invoices", down)
+    run(eng._guard("invoices", eng.sync_invoices))
+    assert sm._get_state("omsguru_down_since")
+    assert sm._get_state("invoices_cursor") == cursor_before  # a failed run never moves the position
+    sm._set_state("omsguru_down_since", time.time() - 3600)  # an hour down
+    monkeypatch.undo()
+    sm._set_state("open_orders_last_done", time.time())
+    sm._set_state("trail_audit_progress", {"windows": [], "last_id": 0})
+    run(eng._guard("invoices", eng.sync_invoices))  # OMSGuru answers again
+    assert eng.jobs["invoices"].last_ok
+    assert sm._get_state("omsguru_down_since") is None
+    assert sm._get_state("trail_audit_force_deep") and sm._get_state("trail_audit_progress") is None
+    assert sm._get_state("open_orders_last_done") == 0 and sm._get_state("cancel_sweep_last_done") == 0
+    with session_scope() as db:
+        log = db.scalar(select(SyncLog).where(SyncLog.job == "catch_up").order_by(SyncLog.id.desc()).limit(1))
+        assert log is not None and "after 60 min" in log.message
+    sm._set_state("trail_audit_force_deep", None)
+
+
+def test_a_short_blip_does_not_start_a_catch_up(env, monkeypatch):
+    _, eng = env
+    sm._set_state("omsguru_down_since", time.time() - 30)
+    sm._set_state("trail_audit_force_deep", None)
+    run(eng._guard("invoices", eng.sync_invoices))
+    assert sm._get_state("omsguru_down_since") is None and not sm._get_state("trail_audit_force_deep")
+
