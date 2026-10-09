@@ -35,7 +35,7 @@ from app.services.scanning import _event, find_orders  # noqa: E402
 from app.timeutil import today_dispatch_date  # noqa: E402
 
 
-def candidates(db, days: int | None, closed: list | None = None) -> list[tuple[Scan, str]]:
+def candidates(db, days: int | None, closed: list | None = None, every: bool = False) -> list[tuple[Scan, str]]:
     """Wrong-barcode Not-found scans that may be removed. Those in a CLOSED manifest (dispatch already handed over;
     only an admin removes scans there in the app) are left alone and put in [closed] for the listing."""
     channels = {c.id: c.name for c in db.scalars(select(Channel))}
@@ -48,6 +48,8 @@ def candidates(db, days: int | None, closed: list | None = None) -> list[tuple[S
         if find_orders(db, s.tracking_norm):
             continue  # OMSGuru knows it now - reverify turns it OK / Check on the next sync
         why = awb_shapes.wrong_barcode(db, s.channel_id, s.tracking_raw, s.tracking_norm, channels.get(s.channel_id, ""))
+        if not why and every:
+            why = "Not found in OMSGuru: only verified scans are kept (rule of 9 Oct 2026)"
         if not why:
             continue
         if s.manifest_id in closed_ids:
@@ -62,12 +64,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--yes", action="store_true", help="really remove them (default: only list)")
     ap.add_argument("--days", type=int, default=None, help="only scans of the last N dispatch days")
+    ap.add_argument("--all", action="store_true",
+                    help="every saved 'Not found' scan OMSGuru still does not know, also AWB-shaped ones (since 9 Oct "
+                         "2026 Not found is never saved)")
     ap.add_argument("--user", default=settings.admin_username or "admin", help="recorded as who removed them")
     a = ap.parse_args()
 
     with session_scope() as db:
         closed: list = []
-        found = candidates(db, a.days, closed)
+        found = candidates(db, a.days, closed, every=a.all)
         by_channel = Counter(s.channel.name if s.channel else "?" for s, _ in found)
         kept = db.query(Scan).filter(Scan.result == "UNVERIFIED").count() - len(found)
         print(f"Wrong-barcode 'Not found' scans: {len(found)}  (other 'Not found' scans kept: {kept})")
@@ -88,7 +93,8 @@ def main() -> None:
             sys.exit("No admin account to record the removal under - pass --user <username>")
         for s, why in found:
             _event(db, user=user, station="cleanup", channel_id=s.channel_id, raw=s.tracking_raw, norm=s.tracking_norm,
-                   outcome="VOIDED", message=f"Removed by cleanup: not an AWB (wrong barcode). {why}", scan_id=s.id)
+                   outcome="VOIDED", message=f"Removed by cleanup: {why}" if a.all else
+                   f"Removed by cleanup: not an AWB (wrong barcode). {why}", scan_id=s.id)
             db.delete(s)
     cache.clear()
     print(f"Removed {len(found)} scans (audit trail: scan_events, outcome VOIDED).")

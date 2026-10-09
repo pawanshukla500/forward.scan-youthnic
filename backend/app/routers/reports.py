@@ -78,11 +78,15 @@ def _dashboard(db: Session, d: date) -> dict:
             per[cid]["alerts"] = n
     for cid, outcome, n in db.execute(
         select(ScanEvent.channel_id, ScanEvent.outcome, func.count(ScanEvent.id))
-        .where(ScanEvent.dispatch_date == d, ScanEvent.outcome.in_(["DUPLICATE", "WRONG_CHANNEL", "BLOCKED", "INVALID"]))
+        .where(ScanEvent.dispatch_date == d,
+               ScanEvent.outcome.in_(["DUPLICATE", "WRONG_CHANNEL", "BLOCKED", "INVALID", "NOT_FOUND"]))
         .group_by(ScanEvent.channel_id, ScanEvent.outcome)
     ):
         if cid in per:
-            per[cid][outcome] = n
+            if outcome == "NOT_FOUND":  # not saved since 9 Oct: the attempts are the "Not found" number
+                per[cid]["UNVERIFIED"] += n
+            else:
+                per[cid][outcome] = n
 
     pend = pending_counts(db) if is_today else {}
     channels = []
@@ -354,6 +358,13 @@ def operators(date_from: str | None = None, date_to: str | None = None, channel_
             ScanEvent.dispatch_date >= df, ScanEvent.dispatch_date <= dt,
             ScanEvent.outcome.in_(["DUPLICATE", "WRONG_CHANNEL", "BLOCKED", "INVALID"]))
         .group_by(ScanEvent.user_id)).all())
+    for uid, n in db.execute(
+        select(ScanEvent.user_id, func.count(ScanEvent.id)).where(
+            ScanEvent.dispatch_date >= df, ScanEvent.dispatch_date <= dt, ScanEvent.outcome == "NOT_FOUND")
+        .group_by(ScanEvent.user_id)):
+        p = people.setdefault(uid, {"scans": 0, "ok": 0, "flagged": 0, "not_found": 0, "stations": set(),
+                                    "first": None, "last": None})
+        p["not_found"] += n
     users = {u.id: u for u in db.scalars(select(User).where(User.id.in_(list(people) or [0])))}
     rows = []
     for uid, p in people.items():
@@ -363,7 +374,8 @@ def operators(date_from: str | None = None, date_to: str | None = None, channel_
             "success_rate": round(100 * p["ok"] / p["scans"], 1) if p["scans"] else None, "flagged": p["flagged"],
             "not_found": p["not_found"],
             "rejected": ev.get(uid, 0), "avg_scan_seconds": avg_scan_seconds(db, df, uid) if df == dt else None,
-            "stations": sorted(p["stations"]), "first": iso_utc(p["first"]), "last": iso_utc(p["last"]),
+            "stations": sorted(p["stations"]),
+            "first": iso_utc(p["first"]) if p["first"] else None, "last": iso_utc(p["last"]) if p["last"] else None,
         })
     rows.sort(key=lambda r: -r["scans"])
     return {"rows": rows}

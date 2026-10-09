@@ -166,6 +166,7 @@ const OUTCOME_META: Record<string, { label: string; cls: string; icon: Component
   VOIDED: { label: "Removed", cls: "bg-surface-2 text-ink-2", icon: X },
   FLAGGED: { label: "Flagged", cls: "bg-warn-wash text-warn-ink", icon: Flag },
   ERROR: { label: "NOT saved - server error, scan again", cls: "bg-crit-wash text-crit-ink", icon: AlertOctagon },
+  NOT_FOUND: { label: "Not found - not saved", cls: "bg-nf-wash text-nf-ink", icon: CircleHelp },
   REPEAT: { label: "Already saved (own repeat)", cls: "bg-good-wash text-good-ink", icon: CheckCircle2 },
 };
 

@@ -23,7 +23,7 @@ export const CODE_TITLE: Record<string, string> = {
   RETURN: "Return - do not ship",
   INVALID: "Invalid barcode",
   WRONG_BARCODE: "Wrong barcode - scan the AWB",
-  NOT_IN_OMS: "Not found - flagged, not counted",
+  NOT_IN_OMS: "Not found - NOT saved",
   NOT_RTS: "Accepted - not packed in OMS",
   PARTIAL_CANCEL: "Accepted - partly cancelled",
   ALREADY_SHIPPED_IN_OMS: "Accepted - already shipped in OMS",
@@ -52,7 +52,7 @@ export function scanKind(res: Pick<ScanResponse, "severity" | "code">): ScanKind
 export const KIND_META: Record<ScanKind, { title: string; action: string; sound: string; icon: typeof Check }> = {
   ok: { title: "OK", action: "Verified - put it in the bag", sound: "1 beep", icon: CheckCircle2 },
   duplicate: { title: "Duplicate", action: "Already scanned - not counted again. Set this packet aside.", sound: "3 quick beeps", icon: Copy },
-  notfound: { title: "Not found", action: "Flagged - NOT counted as scanned. OMSGuru does not have this AWB yet: keep the packet aside for a supervisor (it counts by itself if the order syncs)", sound: "beep-boop (high-low)", icon: SearchX },
+  notfound: { title: "Not found", action: "NOT saved - OMSGuru has no order with this barcode yet. Keep the packet aside and scan it again in a few minutes", sound: "beep-boop (high-low)", icon: SearchX },
   check: { title: "Check", action: "Saved - check the packet before it goes", sound: "2 beeps", icon: AlertTriangle },
   stop: { title: "Stop", action: "Not saved - put this packet aside", sound: "buzzer", icon: OctagonX },
 };

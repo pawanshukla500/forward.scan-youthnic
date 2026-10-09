@@ -90,13 +90,14 @@ def _channel_summary(db: Session, df: date, dt: date, group: str):
     for d, cid, outcome, n in db.execute(
         select(ScanEvent.dispatch_date, ScanEvent.channel_id, ScanEvent.outcome, func.count(ScanEvent.id))
         .where(ScanEvent.dispatch_date >= df, ScanEvent.dispatch_date <= dt,
-               ScanEvent.outcome.in_(["DUPLICATE", "WRONG_CHANNEL", "BLOCKED"]))
+               ScanEvent.outcome.in_(["DUPLICATE", "WRONG_CHANNEL", "BLOCKED", "NOT_FOUND"]))
         .group_by(ScanEvent.dispatch_date, ScanEvent.channel_id, ScanEvent.outcome)
     ):
         if cid is None:
             continue
         c = cells.setdefault((key(d), cid), {})
-        c[outcome] = c.get(outcome, 0) + n
+        k = "UNVERIFIED" if outcome == "NOT_FOUND" else outcome  # Not found attempts (not saved since 9 Oct)
+        c[k] = c.get(k, 0) + n
     periods: list[str] = []
     seen: set[str] = set()
     d = df

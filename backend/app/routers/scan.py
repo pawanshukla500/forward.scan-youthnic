@@ -137,17 +137,18 @@ def scan(body: ScanIn, db: Session = Depends(get_db), user: User = Depends(curre
     if res.get("code") == "NOT_IN_OMS" and engine:
         b = engine.brief()
         if res.get("live") in ("busy", "timeout", "error"):
-            res["message"] = ("OMSGuru did not answer in time - saved as NOT FOUND (flagged, not counted as "
-                              "scanned); it counts by itself when the order syncs")
+            res["message"] = ("NOT FOUND - not saved: OMSGuru did not answer in time. Scan the same packet again "
+                              "in a moment")
         elif b["invoices_failing"]:
-            res["message"] = ("OMSGuru sync is failing right now, so new AWBs are not coming in - saved as NOT FOUND "
-                              "(flagged, not counted); it counts by itself once the sync recovers")
+            res["message"] = ("NOT FOUND - not saved: the OMSGuru sync is failing right now, so new AWBs are not "
+                              "coming in. Keep the packet aside and scan it again once the sync recovers")
         elif b["initial_load"]:
-            res["message"] = (f"OMS order list is still loading ({b['cached_orders']:,} orders so far) - "
-                              "saved as NOT FOUND (flagged, not counted); it counts by itself when the order arrives")
+            res["message"] = (f"NOT FOUND - not saved: the OMSGuru order list is still loading "
+                              f"({b['cached_orders']:,} orders so far). Scan the packet again in a few minutes")
         else:
-            res["message"] = ("Checked OMSGuru live: no order with this AWB yet - saved as NOT FOUND (flagged, not "
-                              "counted as scanned). Scan the ORDER ID barcode on the same label to fetch it now.")
+            res["message"] = ("NOT FOUND - not saved: OMSGuru has no order with this AWB yet (checked live). Keep "
+                              "the packet aside; scan the ORDER ID barcode on the same label, or the AWB again in a "
+                              "few minutes")
     return res
 
 
@@ -252,6 +253,8 @@ def _scan_context(db: Session, channel: Channel, limit: int) -> dict:
     yesterday = db.scalar(select(func.count(Scan.id)).where(Scan.dispatch_date == yday, Scan.channel_id == channel_id,
                                                             scanning.counted())) or 0
     from ..models import ScanEvent
+    not_found_tries = db.scalar(select(func.count(ScanEvent.id)).where(
+        ScanEvent.dispatch_date == day, ScanEvent.channel_id == channel_id, ScanEvent.outcome == "NOT_FOUND")) or 0
     rejected = db.scalar(select(func.count(ScanEvent.id)).where(
         ScanEvent.dispatch_date == day, ScanEvent.channel_id == channel_id,
         ScanEvent.outcome.in_(["DUPLICATE", "WRONG_CHANNEL", "BLOCKED"]))) or 0
@@ -297,7 +300,7 @@ def _scan_context(db: Session, channel: Channel, limit: int) -> dict:
         "channel": channel_payload(channel),
         "stats": {"scanned": scanned, "ok": by_result.get("OK", 0),
                   "flagged": by_result.get("WARN", 0) + by_result.get("UNVERIFIED", 0) + alerts,
-                  "not_found": by_result.get("UNVERIFIED", 0),
+                  "not_found": by_result.get("UNVERIFIED", 0) + not_found_tries,
                   "flagged_manual": flagged_manual, "alerts": alerts, "rejected": rejected, "yesterday": yesterday},
         "awb": counts,
         "queue": queue,

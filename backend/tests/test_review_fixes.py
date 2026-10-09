@@ -213,8 +213,12 @@ def test_only_successful_scans_are_counted(eng):
 
         d0, x0 = dash(), ctx()
         assert _scan(packer, "RFCOUNT0001")["code"] == "OK"
-        assert _scan(packer, "NOTINOMS99887")["code"] == "NOT_IN_OMS"
+        nf = _scan(packer, "NOTINOMS99887")
+        assert nf["code"] == "NOT_IN_OMS" and "scan" not in nf  # a notification - nothing saved
+        with session_scope() as db:
+            assert db.scalar(select(Scan.id).where(Scan.tracking_norm == "NOTINOMS99887")) is None
         d1, x1 = dash(), ctx()
+        # the dashboard's "Not found" column counts the attempts; "scanned" only the verified scan
         assert d1["scanned"] == d0["scanned"] + 1 and d1["unverified"] == d0["unverified"] + 1
         assert x1["scanned"] == x0["scanned"] + 1 and x1["not_found"] == x0["not_found"] + 1
         mine = {u["user_id"]: u["scanned"] for u in c.get("/api/dashboard").json()["users"]}
