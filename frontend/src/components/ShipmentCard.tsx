@@ -217,9 +217,7 @@ export function ShipmentCard({
               order.order_type && <span className="tag bg-surface-2 text-ink-2">{order.order_type}</span>
             ))}
           {due?.state === "overdue" && (
-            <span className="tag bg-crit-wash text-crit-ink" title={`AWB generated ${due.age_days} day${due.age_days > 1 ? "s" : ""} ago - it should have shipped that day`}>
-              Overdue · {due.age_days} day{due.age_days > 1 ? "s" : ""}
-            </span>
+            <span className="tag bg-surface-2 text-ink-2">AWB from {due.age_days} day{due.age_days > 1 ? "s" : ""} ago</span>
           )}
           {slaMins !== null && slaMins < 0 && <span className="tag bg-crit-wash text-crit-ink">SLA passed</span>}
           {slaMins !== null && slaMins >= 0 && slaMins < 180 && <span className="tag bg-warn-wash text-warn-ink">Priority dispatch · {fmtMins(slaMins)} to SLA</span>}

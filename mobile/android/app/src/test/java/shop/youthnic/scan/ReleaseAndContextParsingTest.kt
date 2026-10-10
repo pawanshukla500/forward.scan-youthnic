@@ -92,7 +92,20 @@ class ReleaseAndContextParsingTest {
     }
 
     @Test
-    fun pickerPendingIsTodayPlusOverdue() {
+    fun pickerPendingIsSyncedMinusScanned() {
+        // the owner's example: 1000 synced, 980 scanned -> 20 pending
+        val simple = Channel.fromJson(
+            JSONObject(
+                """{"id": 2, "name": "Myntra PPMP", "today": 980, "pending": 20,
+                   "awb_today": {"generated": 1000, "scanned": 980, "pending": 15, "overdue": 5, "cancelled": 0, "pct": 98,
+                                 "pending_all": 20, "synced": 1000}}"""
+            )
+        )
+        assertEquals(20, simple.pendingTotal)
+        assertEquals(1000, simple.awbToday!!.synced)
+        assertEquals(simple.awbToday!!.synced - simple.awbToday!!.scanned, simple.pendingTotal)
+
+        // a server without pending_all / synced: today's pending + earlier days' still count
         val withCounts = Channel.fromJson(
             JSONObject(
                 """{"id": 3, "name": "Tulip Prints - Meesho", "marketplace": "Meesho", "today": 4, "pending": 190,
@@ -100,6 +113,7 @@ class ReleaseAndContextParsingTest {
             )
         )
         assertEquals(186, withCounts.pendingTotal)
+        assertEquals(190, withCounts.awbToday!!.synced)
 
         val olderServer = Channel.fromJson(JSONObject("""{"id": 4, "name": "Old", "today": 1, "pending": 7}"""))
         assertNull(olderServer.awbToday)

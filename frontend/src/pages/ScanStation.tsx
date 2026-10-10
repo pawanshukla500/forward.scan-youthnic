@@ -13,6 +13,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, download, qs, type Channel, type QueueRow, type Scan, type ScanContext, type ScanResponse } from "../api";
+import { simpleCounts } from "../api";
 import { isSupervisor, useAuth } from "../App";
 import { cameraProblem, looksLikeQr } from "../components/CameraScanner";
 import { PhoneScanMode } from "../components/PhoneScanMode";
@@ -399,7 +400,7 @@ export default function ScanStation() {
     else void document.exitFullscreen?.().then(() => setFull(false));
   }
 
-  async function exportPending(bucket: "pending" | "overdue") {
+  async function exportPending(bucket: "pending") {
     try {
       await download(`/api/reconciliation/export.xlsx${qs({ bucket, channel_id: cid })}`);
     } catch (e) {
@@ -412,7 +413,9 @@ export default function ScanStation() {
   const st = ctx?.stats;
   const awb = ctx?.awb;
   const okPct = st && st.scanned ? Math.round((100 * st.ok) / st.scanned) : null;
-  const base = awb ? awb.generated - awb.cancelled : 0;
+  // synced - scanned = pending (earlier days' unscanned AWBs are simply pending)
+  const simple = awb ? simpleCounts(awb) : null;
+  const base = simple?.synced ?? 0;
   const pct = awb?.pct ?? null;
   const sev = last?.res.severity;
   const canUndoLast =
@@ -573,7 +576,7 @@ export default function ScanStation() {
             ) : (
               <>
                 <span>
-                  <b>{awb.scanned.toLocaleString("en-IN")}</b> of {awb.generated.toLocaleString("en-IN")} AWBs scanned today
+                  <b>{awb.scanned.toLocaleString("en-IN")}</b> of {base.toLocaleString("en-IN")} synced orders scanned
                   {pct !== null && <em>{pct}%</em>}
                 </span>
                 <div role="progressbar" aria-valuenow={pct ?? 0} aria-valuemin={0} aria-valuemax={100} aria-label="Today's AWBs scanned">
@@ -582,8 +585,7 @@ export default function ScanStation() {
               </>
             )}
           </div>
-          <Metric label="Pending" value={awb?.pending} className="pending" />
-          <Metric label="Overdue" value={awb?.overdue} className={awb && awb.overdue > 0 ? "overdue" : undefined} />
+          <Metric label="Pending" value={simple?.pending} className="pending" />
           <button type="button" className="secondary metric-download" onClick={() => void exportPending("pending")} title="Download pending AWBs (Excel)">
             <Download className="size-4" aria-hidden /> Download
           </button>
@@ -631,11 +633,6 @@ export default function ScanStation() {
             <p>{tab === "queue" ? "Orders sorted by carrier cutoff and priority." : "All stations, today. Updates live."}</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            {tab === "queue" && (awb?.overdue ?? 0) > 0 && (
-              <Button variant="ghost" onClick={() => void exportPending("overdue")}>
-                <Download className="size-4" aria-hidden /> Overdue
-              </Button>
-            )}
             {tab === "queue" && (
               <Button onClick={() => void exportPending("pending")}>
                 <Download className="size-4" aria-hidden /> Export queue
@@ -755,11 +752,7 @@ export default function ScanStation() {
                 </div>
                 <div>
                   <dt>Pending</dt>
-                  <dd className="warning-text">{awb ? awb.pending.toLocaleString("en-IN") : "—"}</dd>
-                </div>
-                <div>
-                  <dt>Overdue</dt>
-                  <dd className={awb && awb.overdue > 0 ? "text-crit-ink" : undefined}>{awb ? awb.overdue.toLocaleString("en-IN") : "—"}</dd>
+                  <dd className="warning-text">{simple ? simple.pending.toLocaleString("en-IN") : "—"}</dd>
                 </div>
               </dl>
               <SoundLegend />

@@ -2,6 +2,7 @@ import { ArrowRight, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type Channel } from "../api";
+import { simpleCounts } from "../api";
 import { AwbProgress } from "../components/AwbProgress";
 import { SyncNotice } from "../components/SyncNotice";
 import { ChannelDot, Empty, inputCls, PageHeader, Spinner } from "../components/ui";
@@ -76,19 +77,14 @@ export default function ChannelPicker() {
                   {c.awb_today && (
                     <>
                       <span>
-                        <b className="text-warn-ink">{c.awb_today.pending.toLocaleString("en-IN")}</b> pending
+                        <b className="text-warn-ink">{simpleCounts(c.awb_today).pending.toLocaleString("en-IN")}</b> pending
                       </span>
-                      {c.awb_today.overdue > 0 && (
-                        <span>
-                          <b className="text-crit-ink">{c.awb_today.overdue.toLocaleString("en-IN")}</b> overdue
-                        </span>
-                      )}
                     </>
                   )}
                 </div>
-                {c.awb_today && c.awb_today.generated > 0 && (
+                {c.awb_today && simpleCounts(c.awb_today).synced > 0 && (
                   <div className="mt-2">
-                    <AwbProgress c={{ ...c.awb_today, overdue: 0 }} compact title="AWBs today" />
+                    <AwbProgress c={c.awb_today} compact title="Synced orders" />
                   </div>
                 )}
               </div>

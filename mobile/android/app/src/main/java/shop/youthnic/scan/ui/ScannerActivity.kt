@@ -1065,9 +1065,10 @@ class ScannerActivity : AppCompatActivity() {
     }
 
     private fun renderPendingSheet(sb: SheetPendingBinding, ctx: ScanContext) {
-        sb.tvSumToday.text = Ui.count(ctx.awb.pending)
-        sb.tvSumOverdue.text = Ui.count(ctx.awb.overdue)
-        sb.tvSumScanned.text = Ui.count(ctx.scannedToday)
+        // synced - scanned = pending (owner, 10 Oct 2026: 1000 synced, 980 scanned -> 20 pending)
+        sb.tvSumSynced.text = Ui.count(ctx.awb.synced)
+        sb.tvSumScanned.text = Ui.count(ctx.awb.scanned)
+        sb.tvSumPending.text = Ui.count(ctx.pendingTotal)
 
         if (ctx.queue == renderedQueue && sb.pendingList.childCount > 0) return  // same rows: keep the scroll position
         renderedQueue = ctx.queue
@@ -1115,10 +1116,8 @@ class ScannerActivity : AppCompatActivity() {
 
         val awbAt = Ui.parseIsoUtc(row.awbGeneratedAt)
         val sla = Ui.parseIsoUtc(row.slaDate)
-        if (row.ageDays > 0) {
-            val from = awbAt?.let { Ui.shortDate(it) } ?: "-"
-            rb.tvRowWhen.text = resources.getQuantityString(R.plurals.overdue_days, row.ageDays, from, row.ageDays)
-            rb.tvRowWhen.setTextColor(ContextCompat.getColor(this, R.color.verdict_stop))
+        if (row.ageDays > 0) {  // an earlier day's AWB: simply pending, shown with its date
+            rb.tvRowWhen.text = getString(R.string.awb_from_format, awbAt?.let { Ui.shortDate(it) } ?: "-")
         } else if (sla != null) {
             rb.tvRowWhen.text = getString(R.string.ship_by_format, Ui.shortDateTime(sla))
         } else if (awbAt != null) {

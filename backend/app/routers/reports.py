@@ -407,7 +407,8 @@ def marketplaces(db: Session = Depends(get_db), user: User = Depends(current_use
         out.append({
             **channel_payload(c), "awb_7d": awb7.get(c.id, 0), "last_synced_at": iso_utc(last.get(c.id)),
             "scans_today": scans_today.get(c.id, 0),
-            "today": {k: r.get(k, 0) for k in ("generated", "scanned", "pending", "overdue", "left_unscanned", "cancelled")},
+            "today": {k: r.get(k, 0) for k in ("generated", "scanned", "pending", "overdue", "left_unscanned", "cancelled",
+                                               "pending_all", "synced")},
             "pct": r.get("pct"),
         })
     return {"channels": out, "sync_ok": sync_ok, "retain_days": settings.retain_orders_days}

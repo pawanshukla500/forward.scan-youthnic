@@ -76,7 +76,6 @@
     <string name="pending_label_title">Pending</string>
     <string name="all_done">Done</string>
     <string name="total_pending_format">%1$s pending in total</string>
-    <string name="overdue_format">%1$s overdue from earlier days</string>
 
     <!-- Scanner result -->
     <string name="label_awb">AWB NUMBER</string>
@@ -88,9 +87,9 @@
 
     <!-- Pending sheet -->
     <string name="pending_sheet_title">Pending to scan</string>
-    <string name="sum_today_pending">Pending today</string>
-    <string name="sum_overdue">Overdue</string>
-    <string name="sum_scanned">Scanned today</string>
+    <string name="sum_synced">Synced orders</string>
+    <string name="sum_scanned">Scanned</string>
+    <string name="sum_pending">Pending</string>
     <string name="pending_none">Nothing pending - every AWB on this marketplace is scanned</string>
     <string name="pending_load_failed">Could not load the pending list. Check the connection and tap refresh.</string>
 
@@ -118,10 +117,7 @@
     <string name="order_prefix">Order %1$s</string>
     <string name="ship_by_format">Ship by %1$s</string>
     <string name="awb_generated_format">AWB generated %1$s</string>
-    <plurals name="overdue_days">
-        <item quantity="one">AWB from %1$s · %2$d day late</item>
-        <item quantity="other">AWB from %1$s · %2$d days late</item>
-    </plurals>
+    <string name="awb_from_format">AWB from %1$s</string>
     <string name="recent_load_failed">Could not load recent scans. Check the connection.</string>
     <string name="result_ok">OK</string>
     <string name="result_check">Check</string>

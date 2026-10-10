@@ -62,18 +62,6 @@
                 android:textSize="13sp"
                 tools:text="Meesho · 4 scanned today" />
 
-            <TextView
-                android:id="@+id/tvChannelOverdue"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
-                android:textColor="@color/verdict_stop"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:visibility="gone"
-                tools:text="12 overdue from earlier days"
-                tools:visibility="visible" />
-
             <ProgressBar
                 android:id="@+id/progressChannelToday"
                 style="?android:attr/progressBarStyleHorizontal"
