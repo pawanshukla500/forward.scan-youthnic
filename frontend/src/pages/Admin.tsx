@@ -273,7 +273,7 @@ function Overview({ notify, go }: { notify: Notify; go: (t: Tab) => void }) {
     },
     {
       name: "Data retention",
-      desc: `Working set kept ${s?.retain_orders_days ?? 7} days, scanned orders ${s?.scanned_orders_retention_days ? Math.round((s.scanned_orders_retention_days / 365) * 10) / 10 + " years" : "1.5 years"}, scans ${s?.scan_retention_days ? Math.round((s.scan_retention_days / 365) * 10) / 10 + " years" : "forever"}`,
+      desc: `Unscanned orders kept ${s?.retain_orders_days ?? 7} days; scans and scanned orders ${retentionText(s)}`,
       meta: s ? `${(s.cached_open_orders + (s.cached_left_orders ?? 0)).toLocaleString("en-IN")} orders stored` : "...",
       icon: <Database className="size-5" />,
       onClick: () => go("sync"),
@@ -1113,8 +1113,10 @@ interface SyncStatus {
   cached_open_orders: number;
   cached_left_orders?: number;
   retain_orders_days?: number;
-  scanned_orders_retention_days?: number;
-  scan_retention_days?: number;
+  scan_retention_years?: number;
+  retention_day?: number;
+  retention_next?: string | null;
+  retention_last?: { at: string; kept_from: string; scans: number; orders: number; file: string | null; cloud: boolean | null } | null;
   history?: { done?: boolean; windows?: unknown[]; rows?: number };
   jobs: { name: string; last_started: number | null; last_finished: number | null; last_ok: boolean | null; last_message: string; running: boolean }[];
   limiter: {
@@ -1168,9 +1170,19 @@ const JOB_LABEL: Record<string, string> = {
   exit_check: "Status of orders that left RTS unscanned (spare credits only)",
   catch_up: "Catch-up after an OMSGuru outage: resumes from where it stopped, re-checks 7 days, refreshes the open list",
   history: "History backfill of earlier days (spare credits only)",
-  cleanup: "Clean-up (orders older than the retention, old scans)",
+  cleanup: "Clean-up (unscanned orders older than the working set, every 15 min)",
+  retention: "Monthly clean-up (the 10th): scanned data older than the retention, copy kept in backups",
   channels: "Sales channels",
 };
+
+/** "kept 2 years - older removed on the 10th of every month (next 10 Nov 2026)" */
+function retentionText(s?: { scan_retention_years?: number; retention_day?: number; retention_next?: string | null } | null): string {
+  const y = s?.scan_retention_years ?? 2;
+  if (!y) return "kept forever";
+  const d = s?.retention_day ?? 10;
+  const th = d % 10 === 1 && d !== 11 ? "st" : d % 10 === 2 && d !== 12 ? "nd" : d % 10 === 3 && d !== 13 ? "rd" : "th";
+  return `kept ${y} year${y > 1 ? "s" : ""} - older removed on the ${d}${th} of every month${s?.retention_next ? ` (next ${fmtDay(s.retention_next)})` : ""}`;
+}
 
 /* ---- the date orders are counted from (admin) ---------------------------------------------- */
 
@@ -1541,10 +1553,11 @@ function Sync({ notify }: { notify: Notify }) {
           <div className="text-xs font-medium text-ink-2">Packed / Ready-to-ship (synced)</div>
           <div className="mt-1 text-xl font-semibold">{s.cached_open_orders.toLocaleString("en-IN")}</div>
           <div className="text-xs text-muted">
-            + {(s.cached_left_orders ?? 0).toLocaleString("en-IN")} other AWBs (unscanned kept {s.retain_orders_days ?? 7}d · scanned orders kept {s.scanned_orders_retention_days ? `${Math.round((s.scanned_orders_retention_days / 365) * 10) / 10}y` : "1.5y"})
+            + {(s.cached_left_orders ?? 0).toLocaleString("en-IN")} other AWBs (unscanned kept {s.retain_orders_days ?? 7}d · scanned orders kept with their scans)
           </div>
           <div className="mt-1 text-xs text-muted">
-            Scans kept {s.scan_retention_days ? `${Math.round((s.scan_retention_days / 365) * 10) / 10} years` : "forever"}
+            Scans {retentionText(s)}
+            {s.retention_last && ` · last clean-up ${new Date(s.retention_last.at).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}: ${s.retention_last.scans.toLocaleString("en-IN")} scans from before ${fmtDay(s.retention_last.kept_from)} removed`}
             {s.history && !s.history.done ? ` · history backfill: ${(s.history.windows?.length ?? 0)} days left` : ""}
           </div>
         </Card>

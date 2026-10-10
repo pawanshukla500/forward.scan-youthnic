@@ -259,7 +259,8 @@ class ScanEvent(Base):
 class DeletedScan(Base):
     """Every scan the app removes (a supervisor's "remove scan", a real scan replacing a one-time mark, a clean-up
     script, any future code) is copied here first - the whole row, with why and when - so scanned data is never lost.
-    backend/restore_deleted_scans.py puts one back. Only the SCAN_RETENTION_DAYS clean-up (3 years) is not copied."""
+    backend/restore_deleted_scans.py puts one back. Only the monthly SCAN_RETENTION_YEARS clean-up (scans older
+    than 2 years) is not copied here: it writes every scan it removes to backups/removed-scans/ instead."""
 
     __tablename__ = "deleted_scans"
 
