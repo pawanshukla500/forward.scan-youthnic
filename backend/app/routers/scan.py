@@ -79,7 +79,8 @@ def list_channels(db: Session = Depends(get_db), user: User = Depends(current_us
     from ..services.reconcile import summary_cached
 
     rec = {ch["id"]: ch for ch in summary_cached(db, day)["channels"]}
-    blank = {"generated": 0, "scanned": 0, "pending": 0, "overdue": 0, "left_unscanned": 0, "cancelled": 0, "pct": None}
+    blank = {"generated": 0, "scanned": 0, "pending": 0, "overdue": 0, "left_unscanned": 0, "cancelled": 0, "pct": None,
+             "pending_all": 0, "synced": 0}
     return {
         "date": day.isoformat(),
         "channels": [
@@ -275,8 +276,11 @@ def _scan_context(db: Session, channel: Channel, limit: int) -> dict:
         counts["left_unscanned"] += r.shipped_in_oms  # info: part of pending
     earlier = reconcile.collect(db, end=start, channel_id=channel_id, pending_only=True)
     counts["overdue"] = len(earlier)
-    base = counts["generated"] - counts["cancelled"]
-    counts["pct"] = round(100 * counts["scanned"] / base) if base > 0 else None
+    # synced - scanned = pending: an earlier day's AWB is simply pending, and once scanned today it is scanned today
+    counts["scanned"] += len(reconcile.collect(db, end=start, channel_id=channel_id, scanned_on=day))
+    counts["pending_all"] = counts["pending"] + counts["overdue"]
+    counts["synced"] = counts["scanned"] + counts["pending_all"]
+    counts["pct"] = round(100 * counts["scanned"] / counts["synced"]) if counts["synced"] > 0 else None
 
     waiting = [r for r in today_recs if r.bucket() == "pending"] + earlier
     far = utcnow() + timedelta(days=3650)

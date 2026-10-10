@@ -100,7 +100,7 @@ export default function Scans() {
   const [operator, setOperator] = useState("");
   const [status, setStatus] = useState(sp.get("result") || (sp.get("alerts_only") ? "ALERTS" : ""));
   const [q, setQ] = useState(sp.get("q") || "");
-  const [pendingBucket, setPendingBucket] = useState<"pending" | "overdue">("pending");
+  const pendingBucket = "pending"; // synced - scanned: one pending list, no separate "overdue"
   const [page, setPage] = useState(1);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [filters, setFilters] = useState<{ couriers: string[]; operators: { id: number; name: string }[] }>({ couriers: [], operators: [] });
@@ -358,16 +358,6 @@ export default function Scans() {
             </Pick>
           </div>
         )}
-        {view === "pending" && (
-          <div className="flex flex-wrap items-end gap-3 border-t border-line bg-surface-2 px-4 py-3 sm:px-6">
-            <Pick label="Show">
-              <select className={selCls} value={pendingBucket} onChange={(e) => reset(setPendingBucket)(e.target.value as "pending" | "overdue")}>
-                <option value="pending">AWB generated that day, not scanned</option>
-                <option value="overdue">Overdue - AWB from an earlier day</option>
-              </select>
-            </Pick>
-          </div>
-        )}
 
         <div className="sheet-formula" aria-hidden>
           <span className="font-bold italic">fx</span>
@@ -501,7 +491,7 @@ function AwbLookup({ q }: { q: string }) {
     if (o.status_group === "CANCELLED" || o.status_group === "RETURN") return `${o.status_text || "Cancelled"} in OMSGuru - not pending`;
     if (o.status_group === "REPLACED") return o.status_text || "AWB replaced by a new label";
     const due = o.dispatch_due;
-    return `NOT scanned yet - pending${due ? (due.state === "overdue" ? `, overdue ${due.age_days} day${due.age_days === 1 ? "" : "s"}` : ", due today") : ""}`;
+    return `NOT scanned yet - pending${due ? (due.state === "overdue" ? `, AWB from ${due.age_days} day${due.age_days === 1 ? "" : "s"} ago` : ", AWB made today") : ""}`;
   };
   return (
     <div className="card mx-4 my-4 px-5 py-4 text-sm sm:mx-5">

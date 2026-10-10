@@ -59,9 +59,9 @@ data class Channel(
     /** Today's AWBs (same numbers as the web picker and the scan screen); null on an older server. */
     val awbToday: AwbCounts? = null
 ) {
-    /** What the picker shows as pending: today's unscanned AWBs plus overdue ones from earlier days. */
+    /** What the picker shows as pending: synced - scanned (every AWB not scanned yet, whatever day it was made). */
     val pendingTotal: Int
-        get() = awbToday?.let { it.pending + it.overdue } ?: pendingScans
+        get() = awbToday?.pendingAll ?: pendingScans
 
     companion object {
         fun fromJson(json: JSONObject): Channel {
@@ -81,25 +81,39 @@ data class Channel(
     }
 }
 
-/** AWBs generated today for one marketplace (server: reconcile buckets) + overdue ones from earlier days. */
+/** One marketplace's orders to dispatch today (server: reconcile). The owner's simple sum (10 Oct 2026):
+    [synced] - [scanned] = [pendingAll] - e.g. 1000 synced, 980 scanned -> 20 pending. */
 data class AwbCounts(
     val generated: Int,
+    /** scanned of the synced orders (an earlier day's AWB scanned today included) */
     val scanned: Int,
+    /** today's AWBs not scanned yet (part of [pendingAll]) */
     val pending: Int,
+    /** earlier days' AWBs not scanned yet (part of [pendingAll]; not shown on its own any more) */
     val overdue: Int,
     val cancelled: Int,
-    /** % of today's (non-cancelled) AWBs scanned; null when no AWB was generated today. */
-    val pct: Int?
+    /** % of the synced orders scanned; null when there is nothing to dispatch. */
+    val pct: Int?,
+    /** every synced order not scanned yet */
+    val pendingAll: Int = pending + overdue,
+    /** synced orders to dispatch (cancelled ones not counted) */
+    val synced: Int = scanned + pendingAll
 ) {
     companion object {
         fun fromJson(json: JSONObject): AwbCounts {
+            val scanned = json.optInt("scanned", 0)
+            val pending = json.optInt("pending", 0)
+            val overdue = json.optInt("overdue", 0)
+            val pendingAll = json.optInt("pending_all", pending + overdue)  // older server: no field
             return AwbCounts(
                 generated = json.optInt("generated", 0),
-                scanned = json.optInt("scanned", 0),
-                pending = json.optInt("pending", 0),
-                overdue = json.optInt("overdue", 0),
+                scanned = scanned,
+                pending = pending,
+                overdue = overdue,
                 cancelled = json.optInt("cancelled", 0),
-                pct = if (json.isNull("pct") || !json.has("pct")) null else json.optInt("pct", 0)
+                pct = if (json.isNull("pct") || !json.has("pct")) null else json.optInt("pct", 0),
+                pendingAll = pendingAll,
+                synced = json.optInt("synced", scanned + pendingAll)
             )
         }
     }
@@ -147,7 +161,7 @@ data class ScanContext(
     /** "Not found" scans today: flagged, not counted in [scannedToday] */
     val notFoundToday: Int = 0
 ) {
-    /** Unscanned AWBs: today's pending + overdue (the same number the Pending list counts). */
+    /** Unscanned AWBs: synced - scanned (the same number the Pending list counts). */
     val pendingTotal: Int
         get() = queueTotal
 
@@ -164,7 +178,7 @@ data class ScanContext(
                 scannedToday = stats.optInt("scanned", 0),
                 awb = awb,
                 queue = queue,
-                queueTotal = json.optInt("queue_total", awb.pending + awb.overdue),
+                queueTotal = json.optInt("queue_total", awb.pendingAll),
                 notFoundToday = stats.optInt("not_found", 0)
             )
         }

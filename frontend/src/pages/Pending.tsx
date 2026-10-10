@@ -53,8 +53,7 @@ interface Row {
 }
 
 const BUCKETS = [
-  { key: "pending", label: "Pending", hint: "AWB generated on this day and not scanned here yet - also when OMS already shows it shipped" },
-  { key: "overdue", label: "Overdue", hint: "AWB generated on an EARLIER day and still not dispatched" },
+  { key: "pending", label: "Pending", hint: "Synced and not scanned here yet - whatever day the AWB was made, also when OMS already shows it shipped" },
   { key: "left_unscanned", label: "Shipped in OMS, not scanned", hint: "Part of Pending: OMS already shows it shipped / in transit, but it was never scanned here - stays pending until it is" },
   { key: "cancelled", label: "Cancelled after AWB", hint: "Cancelled or returned after the label was made - do not ship" },
   { key: "scanned", label: "Scanned", hint: "Forward-scanned" },
@@ -150,7 +149,7 @@ export default function Pending() {
   const t = sum.totals;
   const pages = list ? Math.max(1, Math.ceil(list.total / 100)) : 1;
   const counts: Record<string, number> = {
-    pending: t.pending, overdue: t.overdue, left_unscanned: t.left_unscanned, cancelled: t.cancelled, scanned: t.scanned, generated: t.generated,
+    pending: t.pending_all ?? t.pending, left_unscanned: t.left_unscanned, cancelled: t.cancelled, scanned: t.scanned, generated: t.generated,
   };
 
   return (
@@ -220,7 +219,11 @@ export default function Pending() {
       )}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat label={`AWBs generated ${sum.is_today ? "today" : "on " + sum.date}`} value={t.generated.toLocaleString("en-IN")} />
+        <Stat
+          label="Synced orders"
+          value={(t.synced ?? t.generated - t.cancelled).toLocaleString("en-IN")}
+          hint={sum.is_today ? "to dispatch: today's AWBs + any earlier one not scanned yet" : `AWBs made on ${sum.date}`}
+        />
         <Stat
           label="Scanned"
           value={t.scanned.toLocaleString("en-IN")}
@@ -230,8 +233,7 @@ export default function Pending() {
             (t.marked_shipped ? `${t.pct !== null ? " · " : ""}${t.marked_shipped.toLocaleString("en-IN")} marked shipped from OMSGuru (not scanned here)` : "") || undefined
           }
         />
-        <Stat label={sum.is_today ? "Pending - due today" : "Still pending"} value={t.pending.toLocaleString("en-IN")} tone={t.pending ? "warn" : undefined} />
-        <Stat label="Overdue (earlier days)" value={t.overdue.toLocaleString("en-IN")} tone={t.overdue ? "crit" : undefined} hint="AWB older, still not dispatched" />
+        <Stat label="Pending" value={(t.pending_all ?? t.pending).toLocaleString("en-IN")} tone={(t.pending_all ?? t.pending) ? "warn" : undefined} hint="synced - scanned" />
         <Stat label="Of pending: shipped in OMS" value={t.left_unscanned.toLocaleString("en-IN")} tone={t.left_unscanned ? "warn" : undefined} hint="OMS says shipped, never scanned here" />
         <Stat label="Cancelled after AWB" value={t.cancelled.toLocaleString("en-IN")} hint="excluded from pending" />
       </div>
@@ -249,10 +251,9 @@ export default function Pending() {
               <thead>
                 <tr className="border-b border-line text-left text-xs text-muted">
                   <th className="px-4 py-2 font-medium">Sales channel</th>
-                  <th className="px-3 py-2 text-right font-medium">Generated</th>
+                  <th className="px-3 py-2 text-right font-medium">Synced</th>
                   <th className="px-3 py-2 text-right font-medium">Scanned</th>
                   <th className="px-3 py-2 text-right font-medium">Pending</th>
-                  <th className="px-3 py-2 text-right font-medium">Overdue</th>
                   <th className="px-3 py-2 text-right font-medium">Of pending: shipped in OMS</th>
                   <th className="px-3 py-2 text-right font-medium">Cancelled</th>
                   <th className="w-56 px-4 py-2 font-medium">Progress</th>
@@ -279,10 +280,9 @@ export default function Pending() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 text-right">{cell("generated", c.generated)}</td>
+                      <td className="px-3 text-right">{(c.synced ?? c.generated - c.cancelled).toLocaleString("en-IN")}</td>
                       <td className="px-3 text-right">{cell("scanned", c.scanned, "text-good-ink")}</td>
-                      <td className="px-3 text-right">{cell("pending", c.pending, "text-warn-ink")}</td>
-                      <td className="px-3 text-right">{cell("overdue", c.overdue, "text-crit-ink")}</td>
+                      <td className="px-3 text-right">{cell("pending", c.pending_all ?? c.pending, "text-warn-ink")}</td>
                       <td className="px-3 text-right">{cell("left_unscanned", c.left_unscanned)}</td>
                       <td className="px-3 text-right">{cell("cancelled", c.cancelled)}</td>
                       <td className="px-4 py-2">
@@ -347,7 +347,7 @@ export default function Pending() {
                 </thead>
                 <tbody className="divide-y divide-line">
                   {list.rows.map((r) => (
-                    <tr key={r.awb} className={cx("align-top", (r.bucket === "overdue" || r.sla_breached) && !r.scan && "bg-crit-wash/40")}>
+                    <tr key={r.awb} className={cx("align-top", r.sla_breached && !r.scan && "bg-crit-wash/40")}>
                       <td className="px-4 py-2.5 font-mono">{r.awb}</td>
                       <td className="max-w-[200px] truncate px-3 py-2.5">{r.order?.channel_label}</td>
                       <td className="px-3 py-2.5 font-mono text-xs">{r.order?.channel_order_id}</td>

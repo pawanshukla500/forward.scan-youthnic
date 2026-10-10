@@ -44,6 +44,16 @@ export interface AwbCounts {
   marked_shipped?: number;
   cancelled: number;
   pct: number | null;
+  /** synced orders still to dispatch (cancelled excluded; today: + earlier days' unscanned AWBs) */
+  synced?: number;
+  /** synced - scanned: every AWB not scanned yet, whatever day it was made */
+  pending_all?: number;
+}
+
+/** The owner's simple numbers: synced - scanned = pending (no separate "overdue"). */
+export function simpleCounts(c: AwbCounts): { synced: number; scanned: number; pending: number } {
+  const pending = c.pending_all ?? c.pending + (c.overdue ?? 0);
+  return { scanned: c.scanned, pending, synced: c.synced ?? c.scanned + pending };
 }
 
 export interface OrderItem {

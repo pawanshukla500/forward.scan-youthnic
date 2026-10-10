@@ -56,19 +56,21 @@ On first start the app loads today's AWBs and all Ready-to-ship orders straight 
 
 ## Pending & reconciliation
 
-An AWB generated today must be dispatched today. *Pending & reconciliation* shows, per sales channel and per AWB
-date (last 7 days):
+One simple sum, per sales channel: **synced orders - scanned = pending** (e.g. Myntra PPMP: 1,000 orders synced
+from OMSGuru, 980 scanned -> 20 pending). Today's synced orders are the AWBs made today plus every AWB of an earlier
+day that is still not scanned (or was scanned today); there is no separate "overdue" number - an older AWB is simply
+pending, shown with its date. Cancelled orders are not counted. *Pending & reconciliation* shows, per sales channel
+and per AWB date (last 7 days):
 
 | Bucket | Meaning |
 |---|---|
 | **Scanned** | Forward-scanned by the team |
 | **Pending** | Not scanned here - must go out. **Only a scan in this app takes an AWB out of pending**: it stays pending even when OMS already shows it Shipped / In Transit (Meesho does that as soon as the label is printed, Flipkart at manifest) |
-| **Overdue** | Pending, and the AWB was generated on an earlier day |
 | *Of pending: shipped in OMS* | Information inside Pending: OMS already shows it shipped / in transit, but nobody scanned it here |
 | **Cancelled after AWB** | Cancelled or returned after the label was made - excluded from pending, blocked if scanned |
 
 Unscanned AWBs are not aged out of the database while they count (AWB on or after *Count orders from*), for at most
-`PENDING_KEEP_DAYS` (45) so a label that can never be scanned does not stay overdue forever; scanning one that OMS
+`PENDING_KEEP_DAYS` (45) so a label that can never be scanned does not stay pending forever; scanning one that OMS
 already moved on is a normal **OK** scan and takes it out of Pending.
 
 **Wrong barcodes.** A label carries several barcodes (Myntra packet id `MPP3EM...`, the 2-D route code
@@ -85,7 +87,7 @@ same numbers for its channel, updating live with every scan. *Scans & reports ->
 long-term, channel-wise scan history by day or month.
 
 **Count orders from (Admin -> OMSGuru sync).** An admin sets the day the team started working in this app. Only
-AWBs generated (orders packed / made ready to ship) on or after that day count as generated, pending, overdue or
+AWBs generated (orders packed / made ready to ship) on or after that day count as synced, pending or
 reconciled; the OMSGuru history fill does not reach back before it. Older orders still open in OMSGuru can be
 scanned, they are just not counted. The Pending page shows the date in use.
 

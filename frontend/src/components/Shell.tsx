@@ -171,7 +171,7 @@ function SidebarBody({ onNavigate, onHelp }: { onNavigate?: () => void; onHelp: 
   );
 }
 
-/* ---- notifications: real alerts, stopped scans and overdue AWBs -------------------------------- */
+/* ---- notifications: real alerts and stopped scans -------------------------------- */
 
 interface Note {
   id: string;
@@ -202,15 +202,12 @@ function Notifications() {
       api<{ events: { id: number; created_at: string; tracking: string; outcome: string; message: string; channel: string }[] }>(
         `/api/events${qs({ outcome: "DUPLICATE,WRONG_CHANNEL,BLOCKED,FLAGGED", limit: 6 })}`,
       ),
-      api<{ totals: { overdue: number } }>("/api/reconciliation"),
     ])
-      .then(([a, e, r]) => {
+      .then(([a, e]) => {
         const list: Note[] = [
           ...a.scans.map((s) => ({ id: `a${s.id}`, at: s.scanned_at, kind: "alert" as const, title: `Alert on ${s.tracking}`, text: s.alert.replace("AFTER SCAN: ", ""), to: `/scans?q=${s.tracking}` })),
           ...e.events.map((ev) => ({ id: `e${ev.id}`, at: ev.created_at, kind: "stopped" as const, title: ev.tracking, text: ev.message, outcome: ev.outcome, to: "/scans" })),
         ].sort((x, y) => (x.at < y.at ? 1 : -1));
-        if (r.totals.overdue > 0)
-          list.unshift({ id: "overdue", at: new Date().toISOString(), kind: "overdue", title: `${r.totals.overdue.toLocaleString("en-IN")} overdue AWBs`, text: "AWB generated on an earlier day and still not dispatched", to: "/pending?bucket=overdue" });
         setNotes(list.slice(0, 10));
       })
       .catch(() => {});
@@ -264,7 +261,7 @@ function Notifications() {
         <div role="dialog" aria-label="Notifications" className="flash-in absolute right-0 top-12 z-40 w-[min(380px,calc(100vw-32px))] overflow-hidden rounded-xl border border-line bg-surface shadow-md">
           <div className="flex items-center justify-between border-b border-line px-4 py-3">
             <span className="text-[15px] font-bold">Notifications</span>
-            <span className="text-xs text-muted">alerts, stopped scans, overdue</span>
+            <span className="text-xs text-muted">alerts, stopped scans</span>
           </div>
           {notes.length === 0 ? (
             <p className="px-4 py-8 text-center text-sm text-muted">Nothing needs attention right now.</p>

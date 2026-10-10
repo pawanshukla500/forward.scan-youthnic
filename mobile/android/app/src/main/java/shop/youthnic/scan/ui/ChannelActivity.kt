@@ -172,14 +172,7 @@ class ChannelActivity : AppCompatActivity() {
             }
 
             val awb = channel.awbToday
-            val overdue = awb?.overdue ?: 0
-            if (overdue > 0) {
-                item.tvChannelOverdue.text = getString(R.string.overdue_format, Ui.count(overdue))
-                item.tvChannelOverdue.visibility = View.VISIBLE
-            } else {
-                item.tvChannelOverdue.visibility = View.GONE
-            }
-            if (awb != null && awb.generated > 0) {
+            if (awb != null && awb.synced > 0) {
                 item.progressChannelToday.progress = awb.pct ?: 0
                 item.progressChannelToday.visibility = View.VISIBLE
             } else {

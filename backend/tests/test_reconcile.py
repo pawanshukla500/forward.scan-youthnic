@@ -39,7 +39,8 @@ def env():
 
 def _ch(summary: dict) -> dict:
     return next((x for x in summary["channels"] if x["id"] == CH_ID),
-                {"generated": 0, "scanned": 0, "pending": 0, "overdue": 0, "left_unscanned": 0, "cancelled": 0})
+                {"generated": 0, "scanned": 0, "pending": 0, "overdue": 0, "left_unscanned": 0, "cancelled": 0,
+                 "pending_all": 0, "synced": 0})
 
 
 def test_reconciliation_buckets(env):
@@ -65,13 +66,16 @@ def test_reconciliation_buckets(env):
     delta = {k: after[k] - before[k] for k in ("generated", "scanned", "pending", "overdue", "left_unscanned", "cancelled")}
     # pending = RECPEND001 + RECLEFT001 (OMS says In Transit, but nobody scanned it); left_unscanned is part of it
     assert delta == {"generated": 4, "scanned": 1, "pending": 2, "overdue": 1, "left_unscanned": 1, "cancelled": 1}
+    # the owner's simple calculation (10 Oct 2026): SYNCED - SCANNED = PENDING, the earlier day's AWB included
+    assert after["synced"] - after["scanned"] == after["pending_all"]
+    assert after["pending_all"] - before["pending_all"] == 3 and after["synced"] - before["synced"] == 4
 
     pend = c.get("/api/reconciliation/list", params={"bucket": "pending", "channel_id": CH_ID}).json()["rows"]
-    assert {"RECPEND001", "RECLEFT001"} <= {r["awb"] for r in pend}
+    assert {"RECPEND001", "RECLEFT001", "RECOVER001"} <= {r["awb"] for r in pend}  # one list, earlier days too
     assert next(r for r in pend if r["awb"] == "RECLEFT001")["shipped_in_oms"] is True
     over = c.get("/api/reconciliation/list", params={"bucket": "overdue", "channel_id": CH_ID}).json()["rows"]
     row = next(r for r in over if r["awb"] == "RECOVER001")
-    assert row["bucket"] == "overdue" and row["age_days"] == 2
+    assert row["bucket"] == "pending" and row["age_days"] == 2  # no separate "overdue" any more
     left = c.get("/api/reconciliation/list", params={"bucket": "left_unscanned", "channel_id": CH_ID}).json()["rows"]
     assert "RECLEFT001" in {r["awb"] for r in left}
     scanned = c.get("/api/reconciliation/list", params={"bucket": "scanned", "channel_id": CH_ID}).json()["rows"]
@@ -96,6 +100,21 @@ def test_reconciliation_buckets(env):
     assert res["severity"] == "success", res
     again = _ch(c.get("/api/reconciliation").json())
     assert again["pending"] == after["pending"] - 1 and again["left_unscanned"] == after["left_unscanned"] - 1
+
+    # an earlier day's AWB scanned today: one order moves from pending to scanned, synced stays the same
+    eng.client.busy = True
+    try:
+        res = c.post("/api/scan", json={"channel_id": CH_ID, "tracking": "RECOVER001"}).json()
+    finally:
+        eng.client.busy = False
+    assert res["severity"] in ("success", "warning"), res
+    late = _ch(c.get("/api/reconciliation").json())
+    assert late["synced"] == again["synced"] and late["scanned"] == again["scanned"] + 1
+    assert late["pending_all"] == again["pending_all"] - 1 and late["synced"] - late["scanned"] == late["pending_all"]
+    scanned = c.get("/api/reconciliation/list", params={"bucket": "scanned", "channel_id": CH_ID}).json()["rows"]
+    assert "RECOVER001" in {r["awb"] for r in scanned}
+    awb = c.get("/api/scan-context", params={"channel_id": CH_ID}).json()["awb"]
+    assert (awb["synced"], awb["scanned"], awb["pending_all"]) == (late["synced"], late["scanned"], late["pending_all"])
 
 
 def test_channel_summary_day_and_month(env):

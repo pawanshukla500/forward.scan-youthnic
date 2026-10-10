@@ -150,7 +150,8 @@ export default function Dashboard() {
   const m = dash?.metrics;
   const scanByChannel = new Map((dash?.channels ?? []).map((c) => [c.id, c]));
   const readiness = (rec?.channels ?? []).filter((c) => c.id !== null || c.generated > 0);
-  const overdueTop = [...(rec?.channels ?? [])].filter((c) => c.overdue > 0).sort((x, y) => y.overdue - x.overdue).slice(0, 4);
+  const pend = (c: { pending: number; overdue: number; pending_all?: number }) => c.pending_all ?? c.pending + c.overdue;
+  const pendingTop = [...(rec?.channels ?? [])].filter((c) => pend(c) > 0).sort((x, y) => pend(y) - pend(x)).slice(0, 4);
   const lastSync = dash?.sync?.invoices?.last_finished ? new Date(dash.sync.invoices.last_finished * 1000) : null;
 
   return (
@@ -254,7 +255,7 @@ export default function Dashboard() {
           title="Channel readiness"
           description={
             a
-              ? `${n(a.generated)} AWBs generated ${dayWord} · ${n(a.scanned)} scanned · ${n(a.pending)} pending · ${n(a.overdue)} overdue${a.cancelled ? ` · ${n(a.cancelled)} cancelled` : ""}`
+              ? `${n(a.synced ?? a.generated - a.cancelled)} synced orders · ${n(a.scanned)} scanned · ${n(pend(a))} pending${a.cancelled ? ` · ${n(a.cancelled)} cancelled (not counted)` : ""}`
               : `AWBs generated ${dayWord} and how many are scanned`
           }
           actions={
@@ -285,11 +286,11 @@ export default function Dashboard() {
                         </div>
                       </div>
                     </div>
-                    <AwbProgress c={{ ...c, overdue: 0 }} compact title="AWBs" />
+                    <AwbProgress c={c} compact title="Synced orders" />
                     <div className="flex items-center gap-2 md:justify-end">
-                      {c.pending > 0 && (
+                      {pend(c) > 0 && (
                         <Link to={`/pending${qs({ date, bucket: "pending", channel_id: c.id ?? "" })}`} className="tnum inline-flex h-9 items-center rounded-full bg-warn-wash px-3 text-xs font-semibold text-warn-ink hover:underline">
-                          {n(c.pending)} pending
+                          {n(pend(c))} pending
                         </Link>
                       )}
                       {c.id && (
@@ -310,30 +311,30 @@ export default function Dashboard() {
         </SectionCard>
 
         {/* needs attention */}
-        <SectionCard eyebrow="Exceptions" title="Needs attention" description="Overdue AWBs and stopped scans, newest first">
+        <SectionCard eyebrow="Exceptions" title="Needs attention" description="Pending AWBs and stopped scans, newest first">
           {!rec || !events ? (
             <SkeletonRows rows={4} />
-          ) : overdueTop.length === 0 && events.length === 0 && !t?.alerts ? (
+          ) : pendingTop.length === 0 && events.length === 0 && !t?.alerts ? (
             <Empty title="All clear" icon={CheckCircle2}>
-              No overdue AWBs and no rejected scans {dayWord}.
+              Nothing pending and no rejected scans {dayWord}.
             </Empty>
           ) : (
             <div className="divide-y divide-line">
-              {overdueTop.length > 0 && (
+              {pendingTop.length > 0 && (
                 <div className="space-y-1 px-4 py-3 sm:px-5">
-                  <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted">Overdue AWBs</div>
-                  {overdueTop.map((c) => (
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted">Pending AWBs</div>
+                  {pendingTop.map((c) => (
                     <Link
                       key={String(c.id)}
-                      to={`/pending${qs({ bucket: "overdue", channel_id: c.id ?? "" })}`}
+                      to={`/pending${qs({ bucket: "pending", channel_id: c.id ?? "" })}`}
                       className="ease-ui flex min-h-11 items-center justify-between gap-3 rounded-lg px-2 hover:bg-surface-2"
                     >
                       <span className="flex min-w-0 items-center gap-2">
                         <ChannelDot color={c.color} size={8} />
                         <span className="truncate text-sm font-medium">{c.name}</span>
                       </span>
-                      <span className="tnum inline-flex items-center gap-1 text-sm font-semibold text-crit-ink">
-                        <Timer className="size-3.5" aria-hidden /> {n(c.overdue)}
+                      <span className="tnum inline-flex items-center gap-1 text-sm font-semibold text-warn-ink">
+                        <Timer className="size-3.5" aria-hidden /> {n(pend(c))}
                       </span>
                     </Link>
                   ))}
