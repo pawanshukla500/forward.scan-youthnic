@@ -326,7 +326,7 @@ export default function Dashboard() {
                   {pendingTop.map((c) => (
                     <Link
                       key={String(c.id)}
-                      to={`/pending${qs({ bucket: "pending", channel_id: c.id ?? "" })}`}
+                      to={`/pending${qs({ date, bucket: "pending", channel_id: c.id ?? "" })}`}
                       className="ease-ui flex min-h-11 items-center justify-between gap-3 rounded-lg px-2 hover:bg-surface-2"
                     >
                       <span className="flex min-w-0 items-center gap-2">

@@ -1,7 +1,7 @@
 import { AlertOctagon, CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, Download, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { api, download, fmtDateTime, qs, type AwbCounts, type Order, type Scan } from "../api";
+import { api, download, fmtDateTime, qs, simpleCounts, type AwbCounts, type Order, type Scan } from "../api";
 import { AwbProgress } from "../components/AwbProgress";
 import { Button, Card, ChannelDot, cx, Empty, inputCls, PageHeader, Spinner, Stat, SkeletonRows } from "../components/ui";
 import { useLive, useThrottled } from "../live";
@@ -147,9 +147,10 @@ export default function Pending() {
 
   if (!sum) return <Spinner />;
   const t = sum.totals;
+  const st = simpleCounts(t);  // synced - scanned = pending
   const pages = list ? Math.max(1, Math.ceil(list.total / 100)) : 1;
   const counts: Record<string, number> = {
-    pending: t.pending_all ?? t.pending, left_unscanned: t.left_unscanned, cancelled: t.cancelled, scanned: t.scanned, generated: t.generated,
+    pending: st.pending, left_unscanned: t.left_unscanned, cancelled: t.cancelled, scanned: t.scanned, generated: t.generated,
   };
 
   return (
@@ -221,7 +222,7 @@ export default function Pending() {
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         <Stat
           label="Synced orders"
-          value={(t.synced ?? t.generated - t.cancelled).toLocaleString("en-IN")}
+          value={st.synced.toLocaleString("en-IN")}
           hint={sum.is_today ? "to dispatch: today's AWBs + any earlier one not scanned yet" : `AWBs made on ${sum.date}`}
         />
         <Stat
@@ -233,7 +234,7 @@ export default function Pending() {
             (t.marked_shipped ? `${t.pct !== null ? " · " : ""}${t.marked_shipped.toLocaleString("en-IN")} marked shipped from OMSGuru (not scanned here)` : "") || undefined
           }
         />
-        <Stat label="Pending" value={(t.pending_all ?? t.pending).toLocaleString("en-IN")} tone={(t.pending_all ?? t.pending) ? "warn" : undefined} hint="synced - scanned" />
+        <Stat label="Pending" value={st.pending.toLocaleString("en-IN")} tone={st.pending ? "warn" : undefined} hint="synced - scanned" />
         <Stat label="Of pending: shipped in OMS" value={t.left_unscanned.toLocaleString("en-IN")} tone={t.left_unscanned ? "warn" : undefined} hint="OMS says shipped, never scanned here" />
         <Stat label="Cancelled after AWB" value={t.cancelled.toLocaleString("en-IN")} hint="excluded from pending" />
       </div>
@@ -280,9 +281,9 @@ export default function Pending() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 text-right">{(c.synced ?? c.generated - c.cancelled).toLocaleString("en-IN")}</td>
+                      <td className="px-3 text-right">{simpleCounts(c).synced.toLocaleString("en-IN")}</td>
                       <td className="px-3 text-right">{cell("scanned", c.scanned, "text-good-ink")}</td>
-                      <td className="px-3 text-right">{cell("pending", c.pending_all ?? c.pending, "text-warn-ink")}</td>
+                      <td className="px-3 text-right">{cell("pending", simpleCounts(c).pending, "text-warn-ink")}</td>
                       <td className="px-3 text-right">{cell("left_unscanned", c.left_unscanned)}</td>
                       <td className="px-3 text-right">{cell("cancelled", c.cancelled)}</td>
                       <td className="px-4 py-2">

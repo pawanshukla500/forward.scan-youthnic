@@ -163,10 +163,14 @@ def summary(db: Session, day: date) -> dict[str, Any]:
             if b == "pending" and day < today:
                 row["overdue"] += 1
         elif day == today and r.awb_at is not None and r.awb_at < today_start:
-            if b == "pending":
-                per.setdefault(r.channel_id, _empty())["overdue"] += 1
+            if b == "pending":  # an earlier day's AWB still not scanned: pending today
+                row = per.setdefault(r.channel_id, _empty())
+                row["overdue"] += 1
+                row["left_unscanned"] += r.shipped_in_oms  # info: part of pending, like today's
             elif b == "scanned" and r.scan_day == today:  # an earlier day's AWB scanned today: today's work
-                per.setdefault(r.channel_id, _empty())["scanned_earlier"] += 1
+                row = per.setdefault(r.channel_id, _empty())
+                row["scanned_earlier"] += 1
+                row["marked_shipped"] += r.marked
 
     channels = []
     for cid, row in per.items():
@@ -225,10 +229,12 @@ def records_for(db: Session, day: date, bucket: str, channel_id: int | None) -> 
     today = today_dispatch_date()
     if bucket == "overdue":
         recs = collect(db, end=day_bounds_utc(today)[0], channel_id=channel_id, pending_only=True)
-    elif bucket == "pending" and day == today:
+    elif bucket in ("pending", "left_unscanned") and day == today:
         # one pending list: today's AWBs not scanned AND every earlier one still not scanned (synced - scanned)
         recs = collect(db, start=day_bounds_utc(today)[0], channel_id=channel_id, pending_only=True)
         recs += collect(db, end=day_bounds_utc(today)[0], channel_id=channel_id, pending_only=True)
+        if bucket == "left_unscanned":  # the pending ones OMS already shows as shipped
+            recs = [r for r in recs if r.shipped_in_oms]
     elif bucket == "scanned" and day == today:
         # the same "scanned" the summary counts: today's AWBs scanned + earlier days' AWBs scanned today
         start, end = day_bounds_utc(today)

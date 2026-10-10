@@ -276,6 +276,7 @@ def _scan_context(db: Session, channel: Channel, limit: int) -> dict:
         counts["left_unscanned"] += r.shipped_in_oms  # info: part of pending
     earlier = reconcile.collect(db, end=start, channel_id=channel_id, pending_only=True)
     counts["overdue"] = len(earlier)
+    counts["left_unscanned"] += sum(r.shipped_in_oms for r in earlier)  # info: part of pending
     # synced - scanned = pending: an earlier day's AWB is simply pending, and once scanned today it is scanned today
     counts["scanned"] += len(reconcile.collect(db, end=start, channel_id=channel_id, scanned_on=day))
     counts["pending_all"] = counts["pending"] + counts["overdue"]
