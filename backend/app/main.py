@@ -87,14 +87,6 @@ async def lifespan(app: FastAPI):
     if weak_secret():
         log.warning("APP_SECRET_KEY is short or the example one - sign-in tokens can be forged; set a long random "
                     "value in .env (python -c \"import secrets; print(secrets.token_hex(32))\")")
-    if settings.scan_retention_days != settings.scan_retention_requested:
-        log.warning("SCAN_RETENTION_DAYS=%s is under a year - keeping scans %s days instead "
-                    "(set SCAN_RETENTION_FORCE=true if you really mean it)",
-                    settings.scan_retention_requested, settings.scan_retention_days)
-    if settings.scanned_orders_retention_days != settings.scanned_orders_retention_requested:
-        log.warning("SCANNED_ORDERS_RETENTION_DAYS=%s is under a year - keeping scanned orders %s days instead "
-                    "(set SCAN_RETENTION_FORCE=true if you really mean it)",
-                    settings.scanned_orders_retention_requested, settings.scanned_orders_retention_days)
     dropped = drop_retired_indexes()
     if dropped:
         log.info("Database upgraded: replaced indexes %s", ", ".join(dropped))

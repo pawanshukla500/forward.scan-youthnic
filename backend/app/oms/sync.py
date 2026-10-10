@@ -15,7 +15,10 @@ Orders cancelled before an AWB existed are never stored.
   * audit         - hourly order-trail check: re-reads EVERY invoice of today's and yesterday's dispatch day and
                     compares it AWB by AWB with the local copy; adds what is missing, updates statuses, and keeps
                     "OMSGuru N AWBs = N here" per channel for Admin / Pending (spare API credits only)
-  * cleanup       - drops orders older than RETAIN_ORDERS_DAYS, and scans older than SCAN_RETENTION_DAYS
+  * cleanup       - drops unscanned orders older than RETAIN_ORDERS_DAYS (every 15 min)
+  * retention     - once a month, on RETENTION_DAY (the 10th): removes scanned data older than SCAN_RETENTION_YEARS
+                    (2) - scans, their audit events and their orders; every removed scan is written to
+                    backups/removed-scans/ (and the cloud backup) first
   * channels      - sales-channel list, every 6h
 Scans keep their own copy of the order details, so pruning orders never loses dispatch history.
 """
@@ -23,13 +26,15 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import gzip
 import json
 import logging
 import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import exists, func, select, update
@@ -37,10 +42,10 @@ from sqlalchemy import exists, func, select, update
 from ..config import settings
 from ..db import optimize, session_scope
 from ..models import Channel, OmsOrder, Scan, SkuPhoto, SyncLog, SyncState, Warehouse
-from ..services import cache, tracking
+from ..services import backup, cache, tracking
 from ..services.realtime import hub
 from ..services.scanning import find_orders, reverify_scans
-from ..timeutil import day_bounds_utc, today_dispatch_date, utcnow
+from ..timeutil import day_bounds_utc, iso_utc, to_local, today_dispatch_date, utcnow
 from datetime import timezone
 from .client import OmsAuthError, OmsBusy, OmsClient, OmsDownError, OmsError, OmsThrottled
 from .mapping import ChannelMatcher, normalize_image_url, normalize_sku_key, normalize_tracking, parse_order_row
@@ -67,6 +72,10 @@ CLEANUP_EVERY_SECONDS = 15 * 60
 SYNC_LOG_DAYS = 14
 # Old scans / events are deleted this many rows per transaction (see prune_scans).
 PRUNE_BATCH = 2000
+# The monthly retention run starts at this local hour on RETENTION_DAY (quiet time), and a failed run is retried
+# after this many seconds.
+RETENTION_HOUR = 3
+RETENTION_RETRY_SECONDS = 3600
 # Exit check: orders looked up per run, and the pause when there is nothing to look up.
 EXIT_CHECK_BATCH = 10
 EXIT_CHECK_IDLE_SECONDS = 120
@@ -159,14 +168,16 @@ def _log_run(job: str, ok: bool, calls: int, records: int, msg: str) -> None:
 # job name -> SyncEngine coroutine method
 JOB_METHODS = {"channels": "refresh_channels", "sku_photos": "refresh_sku_photos", "invoices": "sync_invoices",
                "open_orders": "step_open_orders", "crosscheck": "crosscheck", "cancel_sweep": "cancel_sweep",
-               "exit_check": "exit_check", "history": "step_history", "cleanup": "cleanup", "audit": "step_audit"}
+               "exit_check": "exit_check", "history": "step_history", "cleanup": "cleanup", "audit": "step_audit",
+               "retention": "retention"}
 
 
 class SyncEngine:
     def __init__(self) -> None:
         self.client: OmsClient | MockOmsClient = MockOmsClient() if settings.oms_use_mock else OmsClient()
         self.jobs = {n: JobStatus(n) for n in ("channels", "sku_photos", "invoices", "open_orders", "crosscheck",
-                                               "cancel_sweep", "audit", "exit_check", "history", "cleanup")}
+                                               "cancel_sweep", "audit", "exit_check", "history", "cleanup",
+                                               "retention")}
         self._urgent = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._stop = False
@@ -224,6 +235,8 @@ class SyncEngine:
             _set_state("exit_check_idle_at", 0)
         elif job == "cleanup":
             _set_state("cleanup_last_done", 0)
+        elif job == "retention":  # Admin "Run now": removes only what is older than the retention, like the 10th
+            _set_state("retention_requested", True)
         elif job == "history":
             _set_state("history_backfill", None)
             _set_state("history_done", False)
@@ -257,8 +270,10 @@ class SyncEngine:
             "cached_open_orders": open_cnt,
             "cached_left_orders": left_cnt,
             "retain_orders_days": settings.retain_orders_days,
-            "scanned_orders_retention_days": settings.scanned_orders_retention_days,
-            "scan_retention_days": settings.scan_retention_days,
+            "scan_retention_years": settings.scan_retention_years,
+            "retention_day": settings.retention_day,
+            "retention_next": next_retention_run(),
+            "retention_last": _get_state("retention_last"),
             "history": _get_state("history_backfill") or {"done": bool(_get_state("history_done"))},
             "invoices_cursor": _get_state("invoices_cursor"),
             "open_orders_progress": _get_state("open_orders_progress"),
@@ -368,6 +383,8 @@ class SyncEngine:
             return "crosscheck"  # right after a full refresh, while both are in step
         if self._due("cleanup_last_done", CLEANUP_EVERY_SECONDS):
             return "cleanup"
+        if self._retention_due():
+            return "retention"
         if self.omsguru_down_since:
             # OMSGuru is down: knock with the new-AWB sync only (it resumes from its saved position and its success
             # starts the catch-up); every other job keeps its place and waits
@@ -1009,17 +1026,52 @@ class SyncEngine:
 
     async def cleanup(self, job: _Job) -> str:
         n_orders = await asyncio.to_thread(prune_orders)
-        n_scans = await asyncio.to_thread(prune_scans)
         await asyncio.to_thread(prune_sync_logs)
         await asyncio.to_thread(optimize)  # keep the query planner's statistics current
         await _aset("cleanup_last_done", time.time())
-        job.records = n_orders + n_scans
-        parts = []
-        if n_orders:
-            parts.append(f"removed {n_orders} orders older than {settings.retain_orders_days} days")
-        if n_scans:
-            parts.append(f"removed {n_scans} scans older than {settings.scan_retention_days} days")
-        return "; ".join(parts) or "nothing to remove"
+        job.records = n_orders
+        return f"removed {n_orders} unscanned orders older than {settings.retain_orders_days} days" if n_orders \
+            else "nothing to remove"
+
+    def _retention_due(self) -> bool:
+        """Once a month: due from RETENTION_DAY (the 10th) at RETENTION_HOUR local time until it has run that month
+        (a server that was off on the 10th runs it at its first chance after); Admin's "Run now" asks for it at once."""
+        if _get_state("retention_requested"):
+            return True
+        if settings.scan_retention_years <= 0 or not self._due("retention_tried_at", RETENTION_RETRY_SECONDS):
+            return False
+        now = to_local(utcnow())
+        if (now.day, now.hour) < (settings.retention_day, RETENTION_HOUR):
+            return False
+        return _get_state("retention_last_month") != f"{now:%Y-%m}"
+
+    async def retention(self, job: _Job) -> str:
+        """Owner, 10 Oct 2026: scanned data is kept at least 2 years; once a month, on the 10th, what was scanned
+        more than SCAN_RETENTION_YEARS ago is removed - scans, their audit events, and then (no longer scanned) their
+        orders. Each removed scan is written whole to backups/removed-scans/ first, plus the cloud backup."""
+        await _aset("retention_requested", False)
+        await _aset("retention_tried_at", time.time())
+        today = to_local(utcnow()).date()
+        month = f"{today:%Y-%m}"
+        cutoff = retention_cutoff(today)
+        if cutoff is None:
+            await _aset("retention_last_month", month)
+            return "scans are kept forever (SCAN_RETENTION_YEARS=0)"
+        export = Path(settings.backup_dir) / "removed-scans" / f"removed-scans-before-{cutoff.isoformat()}.jsonl.gz"
+        n_scans = await asyncio.to_thread(prune_scans, cutoff, export)
+        n_orders = await asyncio.to_thread(prune_orders)  # their orders are not "scanned" any more: they go too
+        cloud = await asyncio.to_thread(backup.offsite_copy, export, "removed-scans") if n_scans else None
+        await _aset("retention_last", {
+            "at": iso_utc(utcnow()), "kept_from": cutoff.isoformat(), "scans": n_scans, "orders": n_orders,
+            "file": export.name if n_scans else None, "cloud": None if cloud is None else bool(cloud.get("ok")),
+        })
+        await _aset("retention_last_month", month)
+        job.records = n_scans + n_orders
+        if not n_scans:
+            return f"nothing scanned before {cutoff:%d %b %Y} - nothing to remove"
+        where = f"backups/removed-scans/{export.name}" + (
+            "" if cloud is None else " + cloud backup" if cloud.get("ok") else " (cloud copy FAILED)")
+        return f"removed {n_scans} scans from before {cutoff:%d %b %Y} and {n_orders} old orders; copy in {where}"
 
     async def step_history(self, job: _Job) -> str:
         """One page of the one-time backfill of earlier days' AWBs (newest day first), on spare credits only."""
@@ -1357,8 +1409,8 @@ def _find_existing(db, data: dict) -> OmsOrder | None:
 
 def prune_orders() -> int:
     """Keep RETAIN_ORDERS_DAYS of orders (by AWB generation date) for unscanned working-set orders.
-    Orders that were SCANNED are preserved for long-term history in PostgreSQL (SCANNED_ORDERS_RETENTION_DAYS,
-    default 550 days / ~1.5 years) so all scanned order relations, buyer information, and items remain queryable.
+    Orders that were SCANNED stay as long as their scan (buyer, items, status stay queryable): the monthly retention
+    job removes the scan after SCAN_RETENTION_YEARS, and then this removes the order.
     Orders still Packed / Ready-to-ship are always kept, and so is every other unscanned AWB that still counts as
     pending (not cancelled / returned, AWB on or after the tracking start date)."""
     import json as _json
@@ -1368,7 +1420,6 @@ def prune_orders() -> int:
 
     now = utcnow()
     cutoff_working_set = now - timedelta(days=settings.retain_orders_days)
-    cutoff_scanned = now - timedelta(days=settings.scanned_orders_retention_days)
     with session_scope() as db:
         # rows from before awb_generated_at existed
         db.execute(update(OmsOrder).where(OmsOrder.awb_generated_at.is_(None), OmsOrder.tracking_norm != "")
@@ -1398,16 +1449,7 @@ def prune_orders() -> int:
             )
         )
 
-        scanned_doomed = (
-            OmsOrder.status_group.notin_(WORKING_SET)
-            & is_scanned
-            & (awb_at < cutoff_scanned)
-            & (settings.scanned_orders_retention_days > 0)  # 0 = keep forever
-        )
-
-        doomed = list(db.scalars(
-            select(OmsOrder).where(unscanned_doomed | scanned_doomed)
-        ))
+        doomed = list(db.scalars(select(OmsOrder).where(unscanned_doomed)))
         if not doomed:
             return 0
         ids = [o.id for o in doomed]
@@ -1423,29 +1465,69 @@ def prune_orders() -> int:
         return len(ids)
 
 
-def prune_scans() -> int:
-    """Long-term scan history: delete scans (and their audit events / empty manifests) older than
-    SCAN_RETENTION_DAYS from the scan date. 0 keeps everything forever.
+def retention_cutoff(today: date, years: int | None = None) -> date | None:
+    """The first scan date kept: SCAN_RETENTION_YEARS whole calendar years back (on 10 Oct 2028 with 2 years:
+    10 Oct 2026). None = keep everything."""
+    years = settings.scan_retention_years if years is None else years
+    if years <= 0:
+        return None
+    try:
+        return today.replace(year=today.year - years)
+    except ValueError:  # 29 Feb
+        return today.replace(year=today.year - years, day=28)
+
+
+def next_retention_run() -> str | None:
+    """The day the next monthly retention run is due (ISO date), for Admin."""
+    if settings.scan_retention_years <= 0:
+        return None
+    now = to_local(utcnow())
+    run = now.date().replace(day=settings.retention_day)
+    if _get_state("retention_last_month") == f"{now:%Y-%m}":  # done this month: next month
+        run = (run.replace(day=1) + timedelta(days=32)).replace(day=settings.retention_day)
+    return run.isoformat()
+
+
+def prune_scans(cutoff_day: date, export_to: Path | None = None) -> int:
+    """Long-term scan history (the monthly retention job): delete the scans with a scan date before cutoff_day, with
+    their audit events, empty manifests and archived removed scans. Each scan is first written whole (every column,
+    one JSON line) to export_to (gzip): out of the database, still on file.
 
     Deleted PRUNE_BATCH rows at a time, each in its own short transaction: one transaction for a month of
     scans held the write lock for 19 s on 3 years of data, and stations' scans waited the whole time."""
-    if settings.scan_retention_days <= 0:
-        return 0
-    from ..models import Manifest, ScanEvent
+    from ..models import DeletedScan, Manifest, ScanEvent, _jsonable
 
-    cutoff_day = today_dispatch_date() - timedelta(days=settings.scan_retention_days)
     removed = 0
-    for model in (Scan, ScanEvent):
-        while True:
-            with session_scope() as db:
-                ids = list(db.scalars(select(model.id).where(model.dispatch_date < cutoff_day).limit(PRUNE_BATCH)))
-                if ids:
-                    db.execute(model.__table__.delete().where(model.id.in_(ids)))
-            if not ids:
-                break
-            if model is Scan:
-                removed += len(ids)
-            time.sleep(0.05)  # let waiting scans write between batches
+    out = None
+    try:
+        for model in (Scan, ScanEvent, DeletedScan):
+            while True:
+                with session_scope() as db:
+                    if model is Scan and export_to is not None:
+                        rows = list(db.scalars(select(Scan).where(Scan.dispatch_date < cutoff_day)
+                                               .order_by(Scan.id).limit(PRUNE_BATCH)))
+                        if rows and out is None:
+                            export_to.parent.mkdir(parents=True, exist_ok=True)
+                            out = gzip.open(export_to, "at", encoding="utf-8")
+                        for r in rows:  # written (and flushed) before the delete below is committed
+                            out.write(json.dumps({c.name: _jsonable(getattr(r, c.name))
+                                                  for c in Scan.__table__.columns}) + "\n")
+                        if out is not None:
+                            out.flush()
+                        ids = [r.id for r in rows]
+                    else:
+                        ids = list(db.scalars(select(model.id).where(model.dispatch_date < cutoff_day)
+                                              .limit(PRUNE_BATCH)))
+                    if ids:
+                        db.execute(model.__table__.delete().where(model.id.in_(ids)))
+                if not ids:
+                    break
+                if model is Scan:
+                    removed += len(ids)
+                time.sleep(0.05)  # let waiting scans write between batches
+    finally:
+        if out is not None:
+            out.close()
     with session_scope() as db:
         db.execute(Manifest.__table__.delete().where(
             Manifest.dispatch_date < cutoff_day, ~exists().where(Scan.manifest_id == Manifest.id)))

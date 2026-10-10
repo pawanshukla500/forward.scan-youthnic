@@ -75,18 +75,6 @@ def _path_setting(name: str, default: str) -> str:
     return str(p if p.is_absolute() else ROOT_DIR / p)
 
 
-def _scan_retention_days() -> int:
-    days = max(0, _int("SCAN_RETENTION_DAYS", 1095))
-    return 365 if 0 < days < 365 and not _bool("SCAN_RETENTION_FORCE") else days
-
-
-def _scanned_orders_retention_days() -> int:
-    # Scanned orders are kept in PostgreSQL for 1-1.5 years (default 550 days = ~1.5 years).
-    # Minimum 365 days (1 year) unless forced with SCAN_RETENTION_FORCE=true.
-    days = max(0, _int("SCANNED_ORDERS_RETENTION_DAYS", 550))
-    return 365 if 0 < days < 365 and not _bool("SCAN_RETENTION_FORCE") else days
-
-
 @dataclass(frozen=True)
 class Settings:
     oms_base_url: str = os.getenv("OMSGURU_BASE_URL", "https://client.omsguru.com").rstrip("/")
@@ -111,14 +99,12 @@ class Settings:
     # An unscanned (not cancelled) AWB stays pending until it is scanned - but at most this many days, so a label
     # that can never be scanned (replaced AWB, lost packet) does not sit in Overdue forever.
     pending_keep_days: int = min(365, max(7, _int("PENDING_KEEP_DAYS", 45)))
-    # Scanned orders (orders linked to scans) are kept in PostgreSQL for long-term history (default 550 days = 1.5 years).
-    scanned_orders_retention_requested: int = max(0, _int("SCANNED_ORDERS_RETENTION_DAYS", 550))
-    scanned_orders_retention_days: int = field(default_factory=lambda: _scanned_orders_retention_days())
-    # Scans are kept this many days from the scan date (0 = keep forever). 1095 = 3 years. Scans are business
-    # records: a value under a year is almost certainly a typo for RETAIN_ORDERS_DAYS, so it is raised to 365
-    # unless SCAN_RETENTION_FORCE=true (one wrong digit would otherwise delete years of history on next start).
-    scan_retention_requested: int = max(0, _int("SCAN_RETENTION_DAYS", 1095))
-    scan_retention_days: int = field(default_factory=lambda: _scan_retention_days())
+    # Scanned data - scans with their order details and audit events, and the orders they belong to - is kept this
+    # many whole calendar years from the scan date (owner, 10 Oct 2026: at least 2 years); what is older is removed
+    # once a month, on RETENTION_DAY (the 10th), each removed scan first written to backups/removed-scans/.
+    # 0 = keep forever. Whole years only, so a typo can never mean days.
+    scan_retention_years: int = max(0, _int("SCAN_RETENTION_YEARS", 2))
+    retention_day: int = min(28, max(1, _int("RETENTION_DAY", 10)))
     # Fill the last RETAIN_ORDERS_DAYS of AWBs in the background, using only spare API credits.
     history_backfill: bool = _bool("HISTORY_BACKFILL", True)
     # Credits we always leave untouched for other integrations sharing this client id.
