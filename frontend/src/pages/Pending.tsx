@@ -139,7 +139,7 @@ export default function Pending() {
   }, [date, bucket, channelId, page]);
 
   useEffect(load, [load]);
-  const refreshSoon = useThrottled(load, 1500);
+  const refreshSoon = useThrottled(load, 12000);
   useLive((event) => {
     if (!["scan", "scan_voided", "scan_updated", "sync"].includes(event)) return;
     refreshSoon();

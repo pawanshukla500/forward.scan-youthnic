@@ -130,7 +130,7 @@ export default function Dashboard() {
     const t = window.setInterval(load, 5000);
     return () => window.clearInterval(t);
   }, [live, load]);
-  const refreshSoon = useThrottled(load, 1500);
+  const refreshSoon = useThrottled(load, 12000);
   useLive((event) => {
     if (!["scan", "scan_rejected", "scan_updated", "scan_voided", "sync"].includes(event)) return;
     refreshSoon();

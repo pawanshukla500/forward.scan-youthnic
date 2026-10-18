@@ -90,6 +90,9 @@ def list_channels(lite: bool = False, db: Session = Depends(get_db), user: User 
     pend = pending_counts(db)
     from ..services.reconcile import summary_cached
 
+    # Hand the connection back before the shared reconciliation. Every open page asks for this after a scan;
+    # waiting for it while still holding a connection is what filled the pool and left this page on Loading.
+    db.commit()
     rec = {ch["id"]: ch for ch in summary_cached(db, day)["channels"]}
     blank = {"generated": 0, "scanned": 0, "pending": 0, "overdue": 0, "left_unscanned": 0, "cancelled": 0, "pct": None,
              "pending_all": 0, "synced": 0}

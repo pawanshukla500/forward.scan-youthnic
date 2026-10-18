@@ -112,6 +112,20 @@ def drop_retired_indexes() -> list[str]:
     return gone
 
 
+def analyze_postgres() -> None:
+    """Refresh planner statistics. After the 17 Oct restart the counts were stale, so the pending
+    query (run after every scan) picked a slow plan and pinned both CPU cores for the whole shift."""
+    if _is_sqlite:
+        return
+    try:
+        with engine.begin() as conn:
+            for table in ("oms_orders", "scans", "scan_events"):
+                conn.exec_driver_sql(f"ANALYZE {table}")
+    except Exception:
+        import logging
+        logging.getLogger("db").exception("PostgreSQL ANALYZE failed")
+
+
 def optimize(initial: bool = False) -> None:
     """Keep SQLite's query-planner statistics current (without them it picked the wrong indexes)."""
     if not _is_sqlite:

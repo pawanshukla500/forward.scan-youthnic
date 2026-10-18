@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,7 +16,9 @@ from sqlalchemy import func, select, text
 
 from . import models  # noqa: F401 - register tables
 from .config import ROOT_DIR, settings
-from .db import Base, SessionLocal, drop_retired_indexes, engine, ensure_columns, optimize, session_scope
+from .db import (
+    Base, SessionLocal, analyze_postgres, drop_retired_indexes, engine, ensure_columns, optimize, session_scope,
+)
 from .models import User
 from .oms import sync as sync_module
 from .routers import admin, auth, manifests, mobile_app, reconcile, reports, scan
@@ -91,6 +94,7 @@ async def lifespan(app: FastAPI):
     if dropped:
         log.info("Database upgraded: replaced indexes %s", ", ".join(dropped))
     optimize(initial=True)
+    threading.Thread(target=analyze_postgres, name="pg-analyze", daemon=True).start()
     _fill_awb_times()
     with session_scope() as db:
         cleared = clear_shipped_checks(db)
