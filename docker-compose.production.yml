@@ -8,6 +8,10 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    # scan.youthnic.shop stays DNS-only (A record to this VPS, not the orange Cloudflare proxy).
+    # Bot Fight Mode on youthnic.shop then cannot challenge the scan API or the phone app.
+    init: true
+    stop_grace_period: 25s
     expose:
       - "8000"
     ports:
@@ -71,9 +75,9 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
+      timeout: 8s
+      retries: 5
+      start_period: 40s
     logging:
       driver: json-file
       options:

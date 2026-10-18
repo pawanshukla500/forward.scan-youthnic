@@ -48,8 +48,9 @@ function connect() {
     setConnected(false);
     window.clearInterval(pingTimer);
     if (ev.code === 4401 || !started) return; // signed out
-    retry = Math.min(retry + 1, 6);
-    window.setTimeout(connect, 500 * 2 ** retry);
+    // Cap at 8s. The old 32s backoff left a phone that dropped Wi-Fi blind to the other stations for half a minute.
+    retry = Math.min(retry + 1, 4);
+    window.setTimeout(connect, Math.min(8000, 400 * 2 ** retry));
   };
 }
 

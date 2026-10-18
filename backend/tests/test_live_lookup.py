@@ -109,6 +109,33 @@ def test_not_found_awb_is_not_saved_the_order_id_barcode_then_saves_it(env):
     assert scan(c, _ch(1), "OLDAWB00042")["code"] == "DUPLICATE"
 
 
+def test_known_order_does_not_wait_out_a_slow_omsguru(env):
+    """3-5 stations share one OMSGuru call. A known AWB must beep from the local copy when that call is slow."""
+    from app.config import settings
+
+    c, eng = env
+    i = 250
+    orig = eng.client.order_details
+    previous = settings.live_known_timeout_seconds
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(1.5)
+        return await orig(*args, **kwargs)
+
+    eng.client.order_details = slow
+    object.__setattr__(settings, "live_known_timeout_seconds", 0.05)
+    try:
+        t0 = time.monotonic()
+        res = scan(c, _ch(i), mock_awb(i))
+        elapsed = time.monotonic() - t0
+    finally:
+        eng.client.order_details = orig
+        object.__setattr__(settings, "live_known_timeout_seconds", previous)
+    assert res["severity"] == "success", res
+    assert res["live"] == "timeout"
+    assert elapsed < 1.2
+
+
 def test_busy_api_falls_back_to_local_copy(env):
     c, eng = env
     i = 71

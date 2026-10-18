@@ -125,6 +125,11 @@ export default function Dashboard() {
   }, [date, range]);
 
   useEffect(load, [load]);
+  useEffect(() => {
+    if (live) return;
+    const t = window.setInterval(load, 5000);
+    return () => window.clearInterval(t);
+  }, [live, load]);
   const refreshSoon = useThrottled(load, 1500);
   useLive((event) => {
     if (!["scan", "scan_rejected", "scan_updated", "scan_voided", "sync"].includes(event)) return;

@@ -208,15 +208,19 @@ STARTED_AT = __import__("time").time()
 @app.get("/api/health")
 def health():
     db_ok = False
+    db_ms = None
     try:
+        t0 = time.perf_counter()
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-            db_ok = True
+        db_ms = round((time.perf_counter() - t0) * 1000, 1)
+        db_ok = True
     except Exception as exc:
         log.warning("Database health check failed: %s", exc)
         raise HTTPException(status_code=503, detail="Database connectivity failure") from exc
 
     backend_type = "sqlite" if settings.database_url.startswith("sqlite") else "postgresql"
+    pool = engine.pool
     eng = sync_module.engine_instance
     # Seconds since the sync scheduler last turned its loop (None = sync off). It turns every few seconds even
     # while OMSGuru is down, so a large value means the loop itself is stuck: the server watchdog restarts the app.
@@ -225,6 +229,8 @@ def health():
         "ok": True,
         "database_backend": backend_type,
         "database_ok": db_ok,
+        "database_ms": db_ms,
+        "pool_checked_out": pool.checkedout() if hasattr(pool, "checkedout") else None,
         "mode": "mock" if settings.oms_use_mock else "live",
         "ws_clients": hub.count,
         "started_at": STARTED_AT,

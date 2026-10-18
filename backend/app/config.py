@@ -128,6 +128,10 @@ class Settings:
     live_lookup: bool = _bool("LIVE_LOOKUP", True)
     # Max seconds a scan may spend on live OMSGuru calls before falling back to the local copy.
     live_timeout_seconds: float = float(os.getenv("LIVE_TIMEOUT_SECONDS", "2.5") or 2.5)
+    # An AWB already in the local copy (new labels sync every minute) must not hold a station for the full
+    # timeout. 3-5 stations share one OMSGuru call at a time; a slow call used to make the beep wait 2.5s.
+    # A cancellation that arrives after this still raises the AFTER SCAN alert. 0 = use the full timeout.
+    live_known_timeout_seconds: float = float(os.getenv("LIVE_KNOWN_TIMEOUT_SECONDS", "0.8") or 0.8)
     # Credits background sync leaves untouched so scan-time calls almost always find one free.
     live_headroom: int = max(0, _int("LIVE_HEADROOM", 4))
     # Numbers every page re-reads after each scan are recomputed at most this often (seconds) per channel.

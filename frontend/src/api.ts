@@ -226,6 +226,15 @@ export async function api<T = unknown>(path: string, init: RequestInit & { json?
   });
   if (res.status === 401 && !path.startsWith("/api/auth/login")) onUnauthorized?.();
   if (!res.ok) {
+    const ct = res.headers.get("content-type") || "";
+    // Bot Fight Mode returns an HTML challenge instead of JSON. The scan host is DNS-only on purpose;
+    // an orange-cloud proxy in front of it makes every phone and scan gun look like a bot.
+    if (ct.includes("text/html") || res.headers.has("cf-mitigated")) {
+      throw new ApiError(
+        res.status,
+        "Blocked before it reached the scan server. Keep scan.youthnic.shop DNS-only so Cloudflare Bot Fight Mode does not challenge the app.",
+      );
+    }
     let msg = res.statusText;
     try {
       const body = await res.json();

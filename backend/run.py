@@ -41,7 +41,8 @@ def main() -> None:
     # Client IPs (sign-in throttle, logs) come from X-Forwarded-For only when the proxy in front is trusted:
     # FORWARDED_ALLOW_IPS="*" in the container, which only Traefik can reach (port bound to 127.0.0.1).
     uvicorn.run("app.main:app", host=args.host, port=args.port, workers=1, proxy_headers=True,
-                forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1"), log_level="info")
+                forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1"), log_level="info",
+                timeout_keep_alive=30, timeout_graceful_shutdown=20)
 
 
 if __name__ == "__main__":
