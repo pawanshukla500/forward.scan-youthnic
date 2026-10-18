@@ -58,6 +58,14 @@ def test_channels_synced(client):
     assert sum(c["pending"] for c in data["channels"]) > 0
 
 
+def test_channels_lite_returns_before_the_reconcile(client):
+    """The scan home page paints from this. It must not wait on the full pending reconciliation."""
+    data = client.get("/api/channels?lite=1").json()
+    assert data["lite"] is True and data["date"]
+    assert {int(c["id"]) for c in MOCK_CHANNELS} <= {c["id"] for c in data["channels"]}
+    assert all("name" in c and "today" in c and "awb_today" not in c for c in data["channels"])
+
+
 def test_ok_then_duplicate(client):
     i = 3
     assert _is_ready(i)

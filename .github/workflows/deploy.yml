@@ -223,8 +223,12 @@ jobs:
           mkdir -p data data/backups data/rclone
           chmod 700 data/rclone  # Google Drive sign-in for the offsite backup copy
 
-          echo ">>> [3/7] Building and starting Forward Scan container..."
-          docker compose -p forward-scan -f docker-compose.production.yml --env-file .env up -d --build --remove-orphans
+          echo ">>> [3/7] Building the image at low priority so live scans keep the CPU..."
+          # nice 19: the build runs on the same 2 cores as the running app. Without this, a deploy
+          # pegs both cores and the scan page sits on Loading until the image is done.
+          nice -n 19 docker compose -p forward-scan -f docker-compose.production.yml --env-file .env build
+          echo ">>> [3/7] Starting Forward Scan container..."
+          docker compose -p forward-scan -f docker-compose.production.yml --env-file .env up -d --no-build --remove-orphans
 
           echo ">>> [4/7] Linking to /docker/forward-scan for Hostinger hPanel Docker Manager..."
           mkdir -p /docker
