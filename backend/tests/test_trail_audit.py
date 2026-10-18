@@ -128,7 +128,7 @@ def test_audit_runs_hourly_on_spare_credits(env):
     sm._set_state("trail_audit_last_done", time.time() - sm.AUDIT_EVERY_SECONDS - 1)
     # other due jobs (invoices, refresh, ...) come first; once they are done the audit is next
     for key in ("invoices_last_done", "open_orders_last_done", "cancel_sweep_last_done", "cleanup_last_done",
-                "channels_last_done", "sku_photos_last_done"):
+                "channels_last_done", "sku_photos_last_done", "retention_tried_at"):
         sm._set_state(key, time.time())
     sm._set_state("crosscheck_due", False)
     assert eng._next_job() == "audit"
@@ -235,6 +235,7 @@ def test_outage_mode_scans_dont_wait_and_only_the_probe_knocks(env, monkeypatch)
     try:
         sm._set_state("invoices_probe_at", time.time())
         sm._set_state("cleanup_last_done", time.time())
+        sm._set_state("retention_tried_at", time.time())  # the monthly clean-up (due on the 10th) is not either
         sm._set_state("open_orders_last_done", 0)  # would be due - but not while OMSGuru is down
         assert eng._next_job() is None
         sm._set_state("invoices_probe_at", time.time() - sm.DOWN_PROBE_SECONDS - 1)

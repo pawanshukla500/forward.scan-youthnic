@@ -48,11 +48,12 @@ users with roles (scanner / supervisor / manager / admin).
 | Every AWB generated in OMSGuru (= invoice date) | Once, when it appears | `RETAIN_ORDERS_DAYS` (7 days), per sales channel |
 | An order that **leaves** Packed / Ready-to-ship (shipped, in transit, cancelled, returned) | No longer synced - last known status kept | Until its AWB is 7 days old |
 | Orders **cancelled before an AWB existed** | Never | Never stored |
-| **Scans** (per sales channel, with a copy of the order details) | - | `SCAN_RETENTION_DAYS` from the scan date (default 1095 = 3 years; 0 = forever) |
-| Orders that were **scanned** (buyer, items, status) | - | `SCANNED_ORDERS_RETENTION_DAYS` (550; 0 = forever) |
+| **Scans** (per sales channel, with a copy of the order details and their audit trail) | - | `SCAN_RETENTION_YEARS` (2) whole years from the scan date; older ones are removed on the 10th of every month (`RETENTION_DAY`), each written to `backups/removed-scans/` (and the cloud backup) first; 0 = forever |
+| Orders that were **scanned** (buyer, items, status) | - | As long as their scan |
 
 On first start the app loads today's AWBs and all Ready-to-ship orders straight away, then fills the previous
-6 days in the background using only spare API credits. The clean-up runs every 15 minutes and needs no API calls.
+6 days in the background using only spare API credits. The clean-up of unscanned orders runs every 15 minutes, the
+scanned-data clean-up once a month (the 10th, from 03:00); neither needs API calls.
 
 ## Pending & reconciliation
 
@@ -104,7 +105,7 @@ scanned, they are just not counted. The Pending page shows the date in use.
 | **Order-trail audit** | Hourly on spare credits; once a night (after 03:00) the last 7 days | Re-reads OMSGuru's whole invoice list for today and yesterday and compares it AWB by AWB with the app, both ways: an AWB the live sync missed is added (and counts as pending), an unscanned AWB here that OMSGuru does not list is reported. The Pending page shows "Order trail complete: all N AWBs OMSGuru made on this day are here". After a database restore the 7-day round runs at once. |
 | **Re-made labels** | Every sync | When OMSGuru gives a shipment a new AWB (same order and sub-order), the old, never-scanned AWB stops counting (status *AWB replaced*) and scanning the old label is refused: "OLD LABEL - print the new label". |
 | **OMSGuru outage** | When OMSGuru answers 5xx / 401 | Outage mode: scans answer from the stored orders at once (no waiting on a dead API), only the new-AWB sync knocks every 30 s, other jobs keep their place. The new-AWB position only moves after a fully read window, so nothing is skipped; when OMSGuru answers again after 5+ minutes a catch-up starts (7-day AWB-by-AWB re-check, Packed / Ready-to-ship refresh, cancellation sweep). The banner says "OMSGuru is down since HH:MM (their outage)". |
-| **Scans are never lost** | Always | Every scan the app removes (a supervisor's "remove scan", a real scan replacing a one-time mark, a clean-up script) is first copied whole to `deleted_scans` with why and when; `python backend/restore_deleted_scans.py` lists them and `--id N --yes` puts one back. A test fails the build if any change adds code that drops tables, empties the scans table or bulk-deletes scans (only the `SCAN_RETENTION_DAYS` clean-up may). Plus daily full backups, 15-minute recent-scan copies and the Google Drive copy. |
+| **Scans are never lost** | Always | Every scan the app removes (a supervisor's "remove scan", a real scan replacing a one-time mark, a clean-up script) is first copied whole to `deleted_scans` with why and when; `python backend/restore_deleted_scans.py` lists them and `--id N --yes` puts one back. A test fails the build if any change adds code that drops tables, empties the scans table or bulk-deletes scans (only the monthly `SCAN_RETENTION_YEARS` clean-up may, and it writes every scan it removes to `backups/removed-scans/` first). Plus daily full backups, 15-minute recent-scan copies and the Google Drive copy. |
 | **Sync heartbeat** | Always | `/api/health` reports `sync_loop_age_s`; the server's watchdog restarts the app when the sync loop or the health check stops answering. |
 | **Refresh order** | Every refresh | Packed is read before Ready-to-ship (the direction orders move), so an order marked RTS while the refresh runs is never wrongly counted as "left". |
 
@@ -279,8 +280,11 @@ and merges the newest recent-scans copy taken after it. A backup from Google Dri
 
 Packets scanned after the recovery point can simply be scanned again (duplicates are still blocked).
 
-Scans under a year of `SCAN_RETENTION_DAYS` need `SCAN_RETENTION_FORCE=true` (a typo would otherwise delete years of
-history at the next start). Old scans are deleted 2,000 at a time so stations never wait on the clean-up.
+**Long-term scan history.** Scans are kept `SCAN_RETENTION_YEARS` (2) whole years. On the 10th of every month (from
+03:00; at the first chance after if the server was off) the app removes what was scanned before the same date 2 years
+earlier - the scans, their audit events and then their orders - 2,000 at a time so stations never wait. Every removed
+scan is first written whole to `backups/removed-scans/removed-scans-before-<date>.jsonl.gz` (one JSON line per scan)
+and copied to the cloud backup. Admin -> OMSGuru sync shows the next and the last run.
 
 ## Capacity & database
 

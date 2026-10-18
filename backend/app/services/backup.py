@@ -186,6 +186,11 @@ def _offsite(files: list[Path], sub: str, keep_days: int) -> dict[str, Any] | No
     return res
 
 
+def offsite_copy(path: Path, sub: str) -> dict[str, Any] | None:
+    """Copy one file to the cloud backup (<remote>/<backup folder>/<sub>) for good; None when there is none."""
+    return _offsite([path], sub, keep_days=36500)
+
+
 def _prune(folder: Path, pattern: str, keep: int) -> None:
     for old in sorted(folder.glob(pattern))[:-keep] if keep > 0 else []:
         old.unlink(missing_ok=True)

@@ -140,15 +140,14 @@ def test_order_leaving_ready_to_ship_stops_syncing_and_ages_out_scans_keep_detai
         s = db.scalar(select(Scan).where(Scan.tracking_norm == "WSLEFT0001"))
         assert s.order_id == left.id
 
-    # When scanned order exceeds long-term retention (1.5 years): pruned with order_json fallback
+    # A scanned order stays as long as its scan, however old its AWB (the monthly retention job removes both)
     with session_scope() as db:
-        ancient = utcnow() - timedelta(days=sm.settings.scanned_orders_retention_days + 1)
-        db.get(OmsOrder, left.id).awb_generated_at = ancient
-    assert sm.prune_orders() >= 1
-    assert _get("WSLEFT0001") is None
+        db.get(OmsOrder, left.id).awb_generated_at = utcnow() - timedelta(days=1000)
+    sm.prune_orders()
+    assert _get("WSLEFT0001") is not None
     with session_scope() as db:
         s = db.scalar(select(Scan).where(Scan.tracking_norm == "WSLEFT0001"))
-        assert s.order_id is None and "ODWSL1" in s.order_json
+        assert s.order_id == left.id and "ODWSL1" in s.order_json
     found = c.get("/api/scans", params={"q": "ODWSL1"}).json()["scans"]
     assert found and found[0]["order"]["channel_order_id"] == "ODWSL1"
     export = c.get("/api/scans/export.xlsx", params={"q": "WSLEFT0001"})
@@ -159,9 +158,10 @@ def test_scans_are_kept_for_the_retention_period(env):
     c, eng = env
     eng._apply_rows([_row("WSOLDSCAN1", "ODWSOS1", "Ready to ship")], "invoices")
     sid = c.post("/api/scan", json={"channel_id": int(MOCK_CHANNELS[0]["id"]), "tracking": "WSOLDSCAN1"}).json()["scan"]["id"]
-    assert sm.prune_scans() == 0  # nothing is anywhere near 3 years old
+    cutoff = sm.retention_cutoff(today_dispatch_date())
+    assert sm.prune_scans(cutoff) == 0  # nothing is anywhere near 2 years old
     with session_scope() as db:
-        db.get(Scan, sid).dispatch_date = db.get(Scan, sid).dispatch_date - timedelta(days=sm.settings.scan_retention_days + 1)
-    assert sm.prune_scans() == 1
+        db.get(Scan, sid).dispatch_date = cutoff - timedelta(days=1)
+    assert sm.prune_scans(cutoff) == 1
     with session_scope() as db:
         assert db.get(Scan, sid) is None

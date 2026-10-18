@@ -6,13 +6,12 @@ import shutil
 import sqlite3
 import threading
 import time
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select
 
-from app import config
 from app.db import SessionLocal, session_scope
 from app.main import app
 from app.models import Channel, Manifest, OmsOrder, Scan, ScanEvent, User
@@ -117,8 +116,9 @@ def test_first_scans_of_the_day_from_several_stations_at_once(client):
         assert db.scalar(select(func.count(Manifest.id)).where(Manifest.channel_id == 990001)) == 1
 
 
-def test_old_scans_are_pruned_in_batches(client, monkeypatch):
-    old_day = today_dispatch_date() - timedelta(days=sm.settings.scan_retention_days + 3)
+def test_old_scans_are_pruned_in_batches(client, monkeypatch, tmp_path):
+    cutoff = sm.retention_cutoff(today_dispatch_date())
+    old_day = cutoff - timedelta(days=3)
     with session_scope() as db:
         uid = db.scalar(select(User.id))
         m = Manifest(dispatch_date=old_day, channel_id=CH, seq=1)
@@ -128,25 +128,23 @@ def test_old_scans_are_pruned_in_batches(client, monkeypatch):
                         channel_id=CH, manifest_id=m.id) for i in range(120))
         db.add_all(ScanEvent(dispatch_date=old_day, user_id=uid, channel_id=CH, outcome="ACCEPTED") for _ in range(130))
     monkeypatch.setattr(sm, "PRUNE_BATCH", 50)
-    assert sm.prune_scans() == 120
+    export = tmp_path / "removed.jsonl.gz"
+    assert sm.prune_scans(cutoff, export) == 120
+    with gzip.open(export, "rt", encoding="utf-8") as f:  # every removed scan is on file, whole
+        assert sum(1 for line in f if '"PRUNE' in line) == 120
     with session_scope() as db:
         assert db.scalar(select(func.count(Scan.id)).where(Scan.dispatch_date == old_day)) == 0
         assert db.scalar(select(func.count(ScanEvent.id)).where(ScanEvent.dispatch_date == old_day)) == 0
         assert db.scalar(select(func.count(Manifest.id)).where(Manifest.dispatch_date == old_day)) == 0
 
 
-@pytest.mark.parametrize("value,force,expected", [("60", "", 365), ("0", "", 0), ("400", "", 400), ("60", "true", 60)])
-def test_scan_retention_under_a_year_needs_force(monkeypatch, value, force, expected):
-    monkeypatch.setenv("SCAN_RETENTION_DAYS", value)
-    monkeypatch.setenv("SCAN_RETENTION_FORCE", force)
-    assert config._scan_retention_days() == expected
-
-
-@pytest.mark.parametrize("value,force,expected", [("60", "", 365), ("0", "", 0), ("550", "", 550), ("60", "true", 60)])
-def test_scanned_orders_retention_under_a_year_needs_force(monkeypatch, value, force, expected):
-    monkeypatch.setenv("SCANNED_ORDERS_RETENTION_DAYS", value)
-    monkeypatch.setenv("SCAN_RETENTION_FORCE", force)
-    assert config._scanned_orders_retention_days() == expected
+@pytest.mark.parametrize("today,years,expected", [
+    (date(2028, 10, 10), 2, date(2026, 10, 10)),  # kept: everything scanned on or after 10 Oct 2026
+    (date(2028, 2, 29), 2, date(2026, 2, 28)),
+    (date(2028, 10, 10), 0, None),                # 0 = keep forever
+])
+def test_retention_is_whole_calendar_years(today, years, expected):
+    assert sm.retention_cutoff(today, years) == expected
 
 
 def test_live_calls_leave_credits_for_sync_and_never_queue():
