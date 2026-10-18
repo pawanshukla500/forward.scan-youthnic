@@ -134,7 +134,7 @@ export default function Scans() {
   };
 
   useEffect(() => {
-    api<{ channels: Channel[] }>("/api/channels").then((r) => setChannels(r.channels));
+    api<{ channels: Channel[] }>("/api/channels?lite=1").then((r) => setChannels(r.channels));
   }, []);
   useEffect(() => {
     api<typeof filters>(`/api/reports/filters${qs({ date_from: dateFrom, date_to: dateTo })}`).then(setFilters).catch(() => {});

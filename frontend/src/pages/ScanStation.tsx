@@ -184,7 +184,7 @@ export default function ScanStation() {
     loadRecent();
   }, [loadCtx, loadRecent]);
   useEffect(() => {
-    api<{ channels: Channel[] }>("/api/channels").then((r) => setChannels(r.channels.filter((c) => c.scan_enabled)));
+    api<{ channels: Channel[] }>("/api/channels?lite=1").then((r) => setChannels(r.channels.filter((c) => c.scan_enabled)));
   }, []);
 
   // Keep the scan box focused: USB scanners type into whatever has focus. Not on a phone with the

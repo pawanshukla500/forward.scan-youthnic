@@ -387,6 +387,7 @@ def marketplaces(db: Session = Depends(get_db), user: User = Depends(current_use
     from ..services.reconcile import summary_cached
 
     day = today_dispatch_date()
+    db.commit()
     rec = {c["id"]: c for c in summary_cached(db, day)["channels"]}
     awb_q = select(OmsOrder.channel_id, func.count(func.distinct(OmsOrder.tracking_norm))).where(OmsOrder.tracking_norm != "")
     if (counted_from := tracking.start_utc()) is not None:

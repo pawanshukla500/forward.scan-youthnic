@@ -45,7 +45,7 @@ export default function Marketplaces() {
     const t = window.setInterval(() => setNow(Date.now()), 30000);
     return () => window.clearInterval(t);
   }, []);
-  const refreshSoon = useThrottled(load, 1500);
+  const refreshSoon = useThrottled(load, 12000);
   useLive((event) => {
     if (!["scan", "scan_voided", "sync"].includes(event)) return;
     refreshSoon();

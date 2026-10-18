@@ -24,6 +24,7 @@ def reconciliation(day: str | None = Query(None, alias="date"), db: Session = De
                    user: User = Depends(current_user)):
     check = _get_state("crosscheck")
     brief = {k: check.get(k) for k in ("ok", "retry", "checked_at", "oms", "local")} if check else None
+    db.commit()  # the shared summary can take a while; don't hold a connection while another request computes it
     return {**reconcile.summary_cached(db, _parse_day(day)), "oms_check": brief}
 
 

@@ -6,7 +6,7 @@ import { simpleCounts } from "../api";
 import { AwbProgress } from "../components/AwbProgress";
 import { SyncNotice } from "../components/SyncNotice";
 import { ChannelDot, Empty, inputCls, PageHeader, Spinner } from "../components/ui";
-import { useLive, useThrottled } from "../live";
+import { useLive } from "../live";
 
 export default function ChannelPicker() {
   const [channels, setChannels] = useState<Channel[] | null>(null);
@@ -14,15 +14,17 @@ export default function ChannelPicker() {
   const [q, setQ] = useState("");
   const [err, setErr] = useState("");
 
-  const load = useCallback(() => {
-    // Names first. The full reconciliation (pending on every channel) can take several seconds while
-    // other stations are scanning; the list must be tappable before that returns.
+  const loadNames = useCallback(() => {
     api<{ date: string; channels: Channel[] }>("/api/channels?lite=1")
       .then((r) => {
         setChannels((cur) => cur ?? r.channels);
         setDate((d) => d || r.date);
       })
       .catch((e) => setErr(e.message));
+  }, []);
+  const loadCounts = useCallback(() => {
+    // Full pending numbers. Not on every scan: that recount was pinning the server since the order
+    // list grew, which is why this page started sitting on Loading.
     api<{ date: string; channels: Channel[] }>("/api/channels")
       .then((r) => {
         setChannels(r.channels);
@@ -32,11 +34,30 @@ export default function ChannelPicker() {
       .catch((e) => setErr(e.message));
   }, []);
 
-  useEffect(load, [load]);
-  const refreshSoon = useThrottled(load, 1500);
-  useLive((event) => {
-    if (!["scan", "scan_voided", "scan_updated", "sync"].includes(event)) return;
-    refreshSoon();
+  useEffect(() => {
+    loadNames();
+    loadCounts();
+    const t = window.setInterval(loadCounts, 20000);
+    return () => window.clearInterval(t);
+  }, [loadNames, loadCounts]);
+  useLive((event, data) => {
+    if (event !== "scan" || !data?.channel_id) return;
+    if (data.result !== "OK" && data.result !== "WARN") return;
+    setChannels((cur) =>
+      cur?.map((c) => {
+        if (c.id !== data.channel_id) return c;
+        const awb = c.awb_today;
+        const pending = awb ? Math.max(0, (awb.pending_all ?? awb.pending ?? 0) - 1) : c.pending;
+        return {
+          ...c,
+          today: (c.today ?? 0) + 1,
+          pending: pending ?? c.pending,
+          awb_today: awb
+            ? { ...awb, scanned: (awb.scanned ?? 0) + 1, pending_all: pending ?? 0, pending: Math.max(0, (awb.pending ?? 0) - 1) }
+            : awb,
+        };
+      }) ?? cur,
+    );
   });
 
   const shown = useMemo(() => {
