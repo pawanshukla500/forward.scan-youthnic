@@ -68,13 +68,25 @@ def channel_payload(c: Channel) -> dict:
 
 
 @router.get("/channels")
-def list_channels(db: Session = Depends(get_db), user: User = Depends(current_user)):
+def list_channels(lite: bool = False, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """The scan home page. `lite` is the names and today's scan counts only.
+
+    The full answer also runs the reconciliation (every open order joined to its scan). That is what left the
+    page on "Loading" while 5-8 stations were scanning: the VPS has two CPU cores and that pass was recomputed
+    after every scan. The page paints from `lite`, then fills the pending numbers from the full answer.
+    """
     day = today_dispatch_date()
     chans = list(db.scalars(select(Channel).where(Channel.scan_enabled.is_(True)).order_by(Channel.sort_order, Channel.name)))
     counts = dict(
         db.execute(select(Scan.channel_id, func.count(Scan.id)).where(Scan.dispatch_date == day, scanning.counted())
                    .group_by(Scan.channel_id)).all()
     )
+    if lite:
+        return {
+            "date": day.isoformat(),
+            "lite": True,
+            "channels": [{**channel_payload(c), "today": counts.get(c.id, 0)} for c in chans],
+        }
     pend = pending_counts(db)
     from ..services.reconcile import summary_cached
 

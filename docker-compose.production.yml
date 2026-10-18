@@ -83,10 +83,15 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
+    # This VPS is 2 vCPU / 8 GB, shared with Postgres and Traefik. cpu_shares above the
+    # default (1024) so a busy neighbour yields to live scans. The old 1 GB cap made the
+    # reconciliation pass stall the channel list while RAM on the machine was still free.
+    cpu_shares: 2048
+    mem_limit: 3g
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 3G
 
 networks:
   shared_infra:

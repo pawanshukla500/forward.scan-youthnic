@@ -15,10 +15,19 @@ export default function ChannelPicker() {
   const [err, setErr] = useState("");
 
   const load = useCallback(() => {
+    // Names first. The full reconciliation (pending on every channel) can take several seconds while
+    // other stations are scanning; the list must be tappable before that returns.
+    api<{ date: string; channels: Channel[] }>("/api/channels?lite=1")
+      .then((r) => {
+        setChannels((cur) => cur ?? r.channels);
+        setDate((d) => d || r.date);
+      })
+      .catch((e) => setErr(e.message));
     api<{ date: string; channels: Channel[] }>("/api/channels")
       .then((r) => {
         setChannels(r.channels);
         setDate(r.date);
+        setErr("");
       })
       .catch((e) => setErr(e.message));
   }, []);
