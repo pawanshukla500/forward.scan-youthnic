@@ -52,7 +52,9 @@ class OmsBusy(OmsError):
     """A live (scan-time) call could not run right now; the caller falls back to the local copy."""
 
 
-LIVE_HTTP_TIMEOUT = 4.0
+# Matched to LIVE_TIMEOUT_SECONDS. Longer than the scan's own wait, a stuck call kept the single OMSGuru
+# lock after the station had already moved on, so the next stations queued behind it.
+LIVE_HTTP_TIMEOUT = 2.5
 # How long a scan-time call may wait for another OMSGuru call to finish before the scan uses the local copy.
 LIVE_LOCK_WAIT = 0.3
 

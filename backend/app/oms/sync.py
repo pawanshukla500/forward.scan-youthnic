@@ -527,7 +527,12 @@ class SyncEngine:
             info["live"] = "down"  # OMSGuru is down: answer from the stored orders at once, no waiting on errors
             return info
         t0 = time.monotonic()
-        deadline = t0 + settings.live_timeout_seconds
+        budget = settings.live_timeout_seconds
+        # Already in the local copy: answer from it if OMSGuru is slow. Unknown barcodes still get the full
+        # budget so a label printed since the last sync can be found before the packer is told "not found".
+        if orders and settings.live_known_timeout_seconds > 0:
+            budget = min(budget, settings.live_known_timeout_seconds)
+        deadline = t0 + budget
 
         def call(coro):
             left = deadline - time.monotonic()

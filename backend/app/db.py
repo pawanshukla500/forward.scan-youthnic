@@ -10,16 +10,30 @@ from .config import settings
 
 _is_sqlite = settings.database_url.startswith("sqlite")
 
+# Postgres: fail fast if the server is unreachable, drop connections the server has already closed, and don't let
+# a forgotten transaction or a lock wait freeze a station. A running report query is not "idle", so this does not
+# cut off a long export. SQLite keeps its own busy timeout below.
+_pg_connect = {
+    "connect_timeout": 5,
+    "application_name": "forward-scan",
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 3,
+    "options": "-c lock_timeout=4000 -c idle_in_transaction_session_timeout=20000",
+}
+
 # The pool must never run dry: FastAPI runs requests on up to 40 threads and the OMS sync uses its own. With the
 # default 5 + 10 connections, 10-15 busy stations used them all and requests and the sync loop waited on each other
 # for the whole pool timeout (load test 3 Oct 2026: 30-60 s freezes; with enough connections p99 stayed < 0.3 s).
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
+    pool_recycle=300,
     pool_size=50 if _is_sqlite else 20,
     max_overflow=20,
     pool_timeout=10,
-    connect_args={"check_same_thread": False, "timeout": 30} if _is_sqlite else {},
+    connect_args={"check_same_thread": False, "timeout": 30} if _is_sqlite else _pg_connect,
 )
 
 if _is_sqlite:

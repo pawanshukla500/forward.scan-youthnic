@@ -21,7 +21,7 @@ import { CODE_TITLE, fmtMins, JourneyCard, KIND_META, scanKind, ShipmentCard, ty
 import { ResultSheet } from "../components/ResultSheet";
 import { SyncBanner, SyncChip, useSyncState } from "../components/SyncNotice";
 import { Button, cx, Empty, IconButton, ResultPill, Skeleton, Toast } from "../components/ui";
-import { useLive, useThrottled } from "../live";
+import { useLive, useLiveStatus, useThrottled } from "../live";
 import { playCue, unlockAudio } from "../sound";
 
 interface Prefs {
@@ -165,6 +165,17 @@ export default function ScanStation() {
     });
   }, [cid]);
   const ctxSoon = useThrottled(loadCtx, 900);
+  const live = useLiveStatus();
+  // The socket is how the other stations' scans arrive. If it drops (phone Wi-Fi), keep this station current
+  // until it reconnects instead of showing a queue that the person next to them already cleared.
+  useEffect(() => {
+    if (live) return;
+    const t = window.setInterval(() => {
+      loadCtx();
+      loadRecent();
+    }, 4000);
+    return () => window.clearInterval(t);
+  }, [live, loadCtx, loadRecent]);
 
   useEffect(() => {
     setCtx(null);
